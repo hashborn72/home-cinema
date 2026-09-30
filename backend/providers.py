@@ -6,7 +6,7 @@ import threading
 import time
 from urllib.parse import urlencode
 import httpx
-from catalog import SOURCES, digest, normal, identify, parse_feed, fetch
+from catalog import SOURCES, digest, normal, identify, parse_feed, fetch, lostfilm_slug
 from settings import jackett_url
 
 LOSTFILM='https://www.lostfilm.tv'
@@ -164,6 +164,8 @@ class Providers:
                 if cid and source!='anwap':
                     # Jackett may broaden a query. Only accept exact existing content identities.
                     rows=[r for r in rows if identify(r['raw'],source,'tv',r['id'])['id']==cid]
+                    slug=self.catalog.detail(cid).get('source_slug')
+                    if source=='lostfilm' and slug:rows=[r for r in rows if lostfilm_slug(r.get('details',''))==slug]
                 self.catalog.ingest(source,rows,update_shelf=False)
                 ids={r['id'] for r in rows}
                 with self.catalog.db() as db:

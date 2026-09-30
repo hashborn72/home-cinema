@@ -56,6 +56,25 @@ class IndexingTests(unittest.TestCase):
         with self.cat.db() as db:db.execute('INSERT INTO catalog_provider_items VALUES (?,?)',(card['id'],json.dumps(card)))
         self.assertIn('RJ Decker',self.p.query_names('Ар-Джей Декер'))
         self.assertIn('Ар-Джей Декер',self.p.query_names('RJ Decker'))
+    def test_same_title_expansion_uses_exact_feed_series(self):
+        current=dict(release('new','Dark Matter S02E05',source='lostfilm',cats=[5000]),details='https://www.lostfilm.tv/series/Dark_Matter_2024%20/season_2/episode_5/')
+        old=dict(release('old','Dark Matter S03',source='lostfilm',cats=[5000]),details='https://www.lostfilm.tv/series/Dark_Matter/seasons')
+        self.cat.ingest('lostfilm',[current])
+        self.cat.ingest('lostfilm',[old],False)
+        cid=self.cat.home()['shelves'][0]['results'][0]['id']
+        detail=self.cat.detail(cid)
+        self.assertEqual(detail['source_slug'],'Dark_Matter_2024')
+        self.assertEqual([r['id'] for r in detail['releases']],['new'])
+        key=self.p.key('lostfilm','Dark Matter',0,cid)
+        with patch.object(self.p,'jackett',return_value=[current,old]):self.p.run(key,'lostfilm','Dark Matter',0,cid)
+        self.assertEqual([r['id'] for r in self.cat.detail(cid)['releases']],['new'])
+    def test_native_poster_is_derived_from_exact_series_page(self):
+        row=dict(release('a','Dark Matter S02E05',source='lostfilm',cats=[5000]),details='https://www.lostfilm.tv/series/Dark_Matter_2024%20/season_2/episode_5/')
+        self.cat.ingest('lostfilm',[row]);card=self.cat.home()['shelves'][0]['results'][0]
+        with patch('providers.lostfilm_directory',return_value=([],False)),patch('metadata.fetch',return_value=b'<img src="/Static/Images/842/Posters/poster.jpg">') as fetch:
+            self.meta.refresh_native(card)
+            fetch.assert_called_once_with('https://www.lostfilm.tv/series/Dark_Matter_2024/',timeout=10,limit=2_000_000)
+        self.assertEqual(self.cat.detail(card['id'])['metadata']['poster'],'https://www.lostfilm.tv/Static/Images/842/Posters/poster.jpg')
 
 
 class AnwapSeriesTests(unittest.TestCase):

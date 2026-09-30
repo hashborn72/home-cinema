@@ -92,7 +92,7 @@ class Metadata:
     def _poster_url(self,url):
         p=urlparse(url)
         if p.scheme!='https' or p.netloc not in ('mm.anwap.media','static.tvmaze.com','image.tmdb.org','www.lostfilm.tv') or p.query or p.fragment:raise KeyError('Invalid poster')
-        if p.netloc=='www.lostfilm.tv' and not re.fullmatch(r'/Static/Images/\d+/Posters/image(?:_s\d+)?\.jpg',p.path):raise KeyError('Invalid poster')
+        if p.netloc=='www.lostfilm.tv' and not re.fullmatch(r'/Static/Images/\d+/Posters/(?:image(?:_s\d+)?|poster)\.jpg',p.path):raise KeyError('Invalid poster')
         if p.netloc=='mm.anwap.media' and not re.fullmatch(r'/(?:films/screen|serials/posts)/\d+\.jpg',p.path):raise KeyError('Invalid poster')
         if p.netloc=='image.tmdb.org' and not re.fullmatch(r'/t/p/w500/[A-Za-z0-9]+\.(?:jpg|png)',p.path):raise KeyError('Invalid poster')
         folder=self.catalog.data_dir/'posters';folder.mkdir(mode=0o700,exist_ok=True)
@@ -117,21 +117,32 @@ class Metadata:
 
     def refresh_native(self,card):
         if card.get('sources')==['lostfilm']:
+            detail=self.catalog.detail(card['id']) or card
+            slug=detail.get('source_slug')
+            check_provider='LostFilm:'+str(slug or '')
             with self.catalog.db() as db:
-                native=db.execute('SELECT 1 FROM catalog_provider_items WHERE id=?',(card['id'],)).fetchone()
-                check=db.execute("SELECT checked_at FROM metadata_checks WHERE content_id=? AND provider='LostFilm'",(card['id'],)).fetchone()
-            if not native and (not check or time.time()-check[0]>86400):
+                native=db.execute('SELECT payload FROM catalog_provider_items WHERE id=?',(card['id'],)).fetchone()
+                check=db.execute('SELECT checked_at FROM metadata_checks WHERE content_id=? AND provider=?',(card['id'],check_provider)).fetchone()
+            native_meta=(json.loads(native[0]).get('metadata') or {}) if native else {}
+            mismatch=slug and native_meta.get('url','').rstrip('/')!='https://www.lostfilm.tv/series/'+slug
+            if (not native_meta.get('poster') or mismatch) and (not check or time.time()-check[0]>86400):
                 # Ambiguous TMDB titles (e.g. remakes) still get the provider's exact-ID poster.
                 try:
                     from providers import lostfilm_directory
                     found,_=lostfilm_directory(card['title'],0)
+                    matches=[m for m in found if m['id']==card['id'] and (not slug or m['metadata']['url'].rstrip('/').endswith('/'+slug))]
+                    match=matches[0] if len(matches)==1 else dict(card,metadata={})
+                    if slug:
+                        url='https://www.lostfilm.tv/series/'+slug+'/'
+                        body=fetch(url,timeout=10,limit=2_000_000).decode('utf-8','replace')
+                        poster=re.search(r'/Static/Images/\d+/Posters/poster\.jpg',body)
+                        if poster:match=dict(match,metadata=dict(match.get('metadata') or {},provider='LostFilm',url=url,poster='https://www.lostfilm.tv'+poster[0]))
                     with self.catalog.db() as db:
-                        for match in found:
-                            if match['id']==card['id']:
-                                db.execute('INSERT OR REPLACE INTO catalog_provider_items VALUES (?,?)',(match['id'],json.dumps(match)))
-                        db.execute('INSERT OR REPLACE INTO metadata_checks VALUES (?,?,?)',(card['id'],'LostFilm',time.time()))
+                        if match.get('metadata',{}).get('poster'):
+                            db.execute('INSERT OR REPLACE INTO catalog_provider_items VALUES (?,?)',(match['id'],json.dumps(match)))
+                        db.execute('INSERT OR REPLACE INTO metadata_checks VALUES (?,?,?)',(card['id'],check_provider,time.time()))
                 except Exception:
-                    with self.catalog.db() as db:db.execute('INSERT OR REPLACE INTO metadata_checks VALUES (?,?,?)',(card['id'],'LostFilm',time.time()-86100))
+                    with self.catalog.db() as db:db.execute('INSERT OR REPLACE INTO metadata_checks VALUES (?,?,?)',(card['id'],check_provider,time.time()-86100))
 
     def refresh(self,card):
         provider='TMDB' if self.tmdb.enabled() else 'TVmaze'

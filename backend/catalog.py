@@ -24,6 +24,11 @@ RUTOR_PATHS = {'/kino': 'movie', '/nashe_kino': 'movie', '/nauchno_popularnoe': 
 
 def digest(text): return hashlib.sha256(text.encode()).hexdigest()[:24]
 def normal(text): return re.sub(r'[^\w]+', ' ', text.casefold().replace('ё', 'е')).strip()
+def lostfilm_slug(url):
+    parsed=urllib.parse.urlparse(url)
+    if parsed.hostname not in ('www.lostfilm.tv','lostfilm.tv'):return None
+    parts=urllib.parse.unquote(parsed.path).split('/')
+    return parts[2].strip() if len(parts)>2 and parts[1]=='series' and re.fullmatch(r'[A-Za-z0-9_-]+',parts[2].strip()) else None
 def number(value):
     try: return max(0, int(value))
     except (ValueError, TypeError): return None
@@ -258,7 +263,14 @@ class Catalog:
         with self.db() as db:
             entry=db.execute('SELECT payload FROM catalog_provider_items WHERE id=?',(content_id,)).fetchone()
         if not releases and not entry: return None
+        source_slug=None
+        if releases and all(r['source']=='lostfilm' for r in releases):
+            # A title alone can match two remakes. Keep the exact provider series from the current feed.
+            primary=max(releases,key=lambda r:(r.get('seen_at',0),r.get('published_at',0)))
+            source_slug=lostfilm_slug(primary.get('details',''))
+            if source_slug:releases=[r for r in releases if lostfilm_slug(r.get('details',''))==source_slug]
         card = self.cards(releases)[0] if releases else json.loads(entry['payload'])
+        if source_slug:card['source_slug']=source_slug
         if entry:
             directory=json.loads(entry['payload'])
             card['provider_title']=directory.get('provider_title',card['title'])
