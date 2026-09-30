@@ -1,4 +1,13 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="320dp" android:height="180dp" android:viewportWidth="320" android:viewportHeight="180">
-    <path android:fillColor="#111827" android:pathData="M0,0h320v180h-320z" />
-    <path android:fillColor="#5EEAD4" android:pathData="M134,53L198,90L134,127z" />
-</vector>
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <size android:width="320dp" android:height="180dp" />
+            <solid android:color="@color/launcher_background" />
+        </shape>
+    </item>
+    <!-- Preserve the supplied square artwork without stretching it to 16:9. -->
+    <item android:width="180dp" android:height="180dp" android:gravity="center">
+        <bitmap android:src="@drawable/home_cinema_logo" android:gravity="fill" android:filter="true" />
+    </item>
+</layer-list>
