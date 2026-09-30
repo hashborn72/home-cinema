@@ -38,6 +38,14 @@ def initialize(data, jackett, torrserver, imports, owner=None):
         config['APIKey'] = config.get('APIKey') or secrets.token_hex(16)
         private_write(config_path, json.dumps(config))
     config = json.loads(config_path.read_text())
+    # Password fields are encrypted with this key ring, not just the API key.
+    keyring = imports/'Jackett/DataProtection'
+    if keyring.is_dir():
+        destination = jackett/'Jackett/DataProtection'
+        destination.mkdir(mode=0o700, exist_ok=True)
+        for source in keyring.glob('key-*.xml'):
+            target = destination/source.name
+            if not target.exists(): private_write(target, source.read_text())
     if not config.get('APIKey'):
         raise ValueError('Existing Jackett config has no API key; refusing to replace it')
     key_path = data/'jackett-key'

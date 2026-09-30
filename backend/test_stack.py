@@ -43,6 +43,9 @@ class StackTests(unittest.TestCase):
         folder.mkdir(parents=True)
         (folder.parent/'ServerConfig.json').write_text(json.dumps({'APIKey':'private-api','Port':8091,'AdminPassword':'private-admin'}))
         (folder/'lostfilm.json').write_text('[{"id":"cookieheader","value":"private-cookie"}]')
+        keyring=folder.parent/'DataProtection'
+        keyring.mkdir()
+        (keyring/'key-fixture.xml').write_text('<key>private-fixture</key>')
         (self.imports/'tmdb-token').write_text('private-tmdb')
         (self.imports/'device-token').write_text('private-device')
         with sqlite3.connect(self.imports/'library.sqlite3') as db:
@@ -53,6 +56,7 @@ class StackTests(unittest.TestCase):
         self.assertEqual((self.data/'jackett-key').read_text(),'private-api')
         self.assertEqual((self.data/'tmdb-token').read_text(),'private-tmdb')
         self.assertIn('private-cookie',(self.jackett/'Jackett/Indexers/lostfilm.json').read_text())
+        self.assertEqual((self.jackett/'Jackett/DataProtection/key-fixture.xml').read_text(),'<key>private-fixture</key>')
         with sqlite3.connect(self.data/'library.sqlite3') as db:
             self.assertEqual(db.execute('SELECT id FROM example').fetchone()[0],42)
             db.execute('UPDATE example SET id=43')
