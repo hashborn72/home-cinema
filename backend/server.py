@@ -1,5 +1,6 @@
 """Development milestone: authenticated, durable playback session ledger."""
 import hashlib
+import html
 import hmac
 import json
 import os
@@ -16,6 +17,7 @@ from library import Library
 from anwap import Search
 from streaming import Streams
 from pairing import Pairing
+from settings import public_url
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
@@ -23,7 +25,6 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 CONTENT_ID = 'probe:big-buck-bunny'
 FILE_KEY = 'big-buck-bunny:sample:v1'
-STREAM_URL = 'http://192.168.0.221:18093/probe-media'
 
 class Start(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -130,13 +131,14 @@ def create_app(data_dir: Path, test_token: str | None = None):
 
     @app.get('/install', response_class=HTMLResponse)
     def install_page():
+        download = '<a href="/downloads/home-cinema.apk">Скачать APK для Android TV</a>' if Path('/releases/home-cinema.apk').is_file() else 'APK устанавливается отдельно — используйте подписанный файл выпуска.'
         return '''<!doctype html><html lang="ru"><meta charset="utf-8">
         <meta name="viewport" content="width=device-width,initial-scale=1">
         <title>Домашняя медиатека</title><body style="font:22px sans-serif;padding:32px">
         <h1>Домашняя медиатека 0.6.0</h1>
-        <p><a href="/downloads/home-cinema.apk">Скачать APK для Android TV</a></p>
+        <p>'''+download+'''</p>
         <p>Установите APK, откройте приложение и введите одноразовый код подключения.</p>
-        <p>Сервер: http://192.168.0.221:18093<br>Для видео нужен Just Player.</p>
+        <p>Сервер: '''+html.escape(public_url())+'''<br>Для видео нужен Just Player.</p>
         <p>Только домашняя сеть. Не открывайте этот сервер в интернет.</p></body></html>'''
 
     @app.api_route('/downloads/home-cinema.apk', methods=['GET', 'HEAD'])
@@ -148,7 +150,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'version': '0.6.0-tv', 'environment': 'development'}
+        return {'status': 'ok', 'version': '0.6.1-stack', 'environment': 'compose' if os.environ.get('CINEMA_STACK_SETUP') == '1' else 'development'}
 
     @app.get('/api/v1/metadata/status', dependencies=[Depends(auth)])
     def metadata_status():return metadata.status()
@@ -267,7 +269,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
         with db() as conn:
             row = conn.execute('SELECT * FROM progress WHERE profile_id=? AND content_id=? AND file_key=?', ('main', CONTENT_ID, FILE_KEY)).fetchone()
         return {'content_id': CONTENT_ID, 'file_key': FILE_KEY, 'title': 'Big Buck Bunny',
-                'stream_url': STREAM_URL, 'position_ms': row['position_ms'] if row else None,
+                'stream_url': public_url()+'/probe-media', 'position_ms': row['position_ms'] if row else None,
                 'duration_ms': row['duration_ms'] if row else None,
                 'completed': bool(row['completed']) if row else False}
 
@@ -324,4 +326,8 @@ def create_app(data_dir: Path, test_token: str | None = None):
     return app
 
 def production_app():
-    return create_app(Path(os.environ.get('CINEMA_DATA', '/data')))
+    data = Path(os.environ.get('CINEMA_DATA', '/data'))
+    if os.environ.get('CINEMA_STACK_SETUP') == '1':
+        from stack_setup import configure
+        configure(data)
+    return create_app(data)

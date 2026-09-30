@@ -1,6 +1,7 @@
 """Private Jackett download -> TorrServer metadata. Never publish upstream URLs."""
 import concurrent.futures
 import json
+import os
 import re
 import threading
 import time
@@ -8,8 +9,7 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, quote
 
 import httpx
 
-TORR = 'http://192.168.1.144:8090'
-JACKETT = '192.168.1.144:8091'
+from settings import jackett_url as jackett_endpoint, torrserver_url, torrserver_public_url
 VIDEO = {'.mkv', '.mp4', '.avi', '.m4v', '.mov', '.ts', '.m2ts', '.webm', '.mpg', '.mpeg'}
 
 
@@ -25,11 +25,20 @@ def valid_magnet(link):
 
 def jackett_url(link, source, key):
     p = urlparse(link)
-    if p.scheme != 'http' or p.netloc != JACKETT or p.path != '/dl/' + source + '/':
+    allowed = urlparse(jackett_endpoint())
+    origins = {(allowed.scheme, allowed.netloc)}
+    for value in os.environ.get('JACKETT_LEGACY_URLS', '').split(','):
+        if value.strip():
+            legacy = urlparse(value.strip())
+            if legacy.scheme not in ('http','https') or not legacy.netloc or legacy.username or legacy.password or legacy.path or legacy.query or legacy.fragment:
+                raise ValueError('Invalid legacy Jackett origin')
+            origins.add((legacy.scheme, legacy.netloc))
+    if ((p.scheme, p.netloc) not in origins or p.fragment or
+            p.path != '/dl/' + source + '/'):
         raise ValueError('Unexpected download endpoint')
     params = parse_qs(p.query)
     params['jackett_apikey'] = [key]
-    return urlunparse((p.scheme, p.netloc, p.path, '', urlencode(params, doseq=True), ''))
+    return urlunparse((allowed.scheme, allowed.netloc, p.path, '', urlencode(params, doseq=True), ''))
 
 
 def video_files(status):
@@ -87,14 +96,14 @@ class Torrents:
         link = release['download_url']
         with httpx.Client(timeout=25, follow_redirects=False, trust_env=False) as client:
             if link.startswith('magnet:'):
-                result = client.post(TORR + '/torrents', json={'action':'add','link':valid_magnet(link),'save_to_db':False})
+                result = client.post(torrserver_url() + '/torrents', json={'action':'add','link':valid_magnet(link),'save_to_db':False})
             else:
                 key = (self.catalog.data_dir/'jackett-key').read_text().strip()
                 url = jackett_url(link,release['source'],key)
                 with client.stream('GET',url) as response:
                     if response.status_code in (301,302,303,307,308):
                         magnet = valid_magnet(response.headers.get('location',''))
-                        result = client.post(TORR+'/torrents',json={'action':'add','link':magnet,'save_to_db':False})
+                        result = client.post(torrserver_url()+'/torrents',json={'action':'add','link':magnet,'save_to_db':False})
                     else:
                         response.raise_for_status()
                         body = bytearray()
@@ -103,7 +112,7 @@ class Torrents:
                             if len(body) > 4_000_000: raise ValueError('Torrent too large')
                         if not body.startswith(b'd') or not body.endswith(b'e'): raise ValueError('Not a torrent')
                         # Multipart prevents the Jackett key being logged as a link by TorrServer.
-                        result = client.post(TORR+'/torrent/upload',files={'file':('release.torrent',bytes(body),'application/x-bittorrent')})
+                        result = client.post(torrserver_url()+'/torrent/upload',files={'file':('release.torrent',bytes(body),'application/x-bittorrent')})
             result.raise_for_status()
             status = result.json()
             if isinstance(status,list):
@@ -129,7 +138,7 @@ class Torrents:
                 if time.monotonic() > deadline: raise TimeoutError()
                 time.sleep(2)
                 with httpx.Client(timeout=8,trust_env=False) as client:
-                    response=client.post(TORR+'/torrents',json={'action':'get','hash':status['hash']})
+                    response=client.post(torrserver_url()+'/torrents',json={'action':'get','hash':status['hash']})
                     response.raise_for_status(); status=response.json()
             files=video_files(status)
             if not files: raise ValueError('No video')
@@ -157,4 +166,4 @@ class Torrents:
             return dict(item,content_id=release['content']['id'])
         file_key=r['hash']+':'+str(file_id)
         return {'content_id':release['content']['id'],'file_key':file_key,'title':file['path'],
-                'stream_url':TORR+'/stream/'+quote(file['path'].rsplit('/',1)[-1],safe='')+'?'+urlencode({'link':r['hash'],'index':file_id,'play':''})}
+                'stream_url':torrserver_public_url()+'/stream/'+quote(file['path'].rsplit('/',1)[-1],safe='')+'?'+urlencode({'link':r['hash'],'index':file_id,'play':''})}

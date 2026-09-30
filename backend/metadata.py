@@ -5,6 +5,7 @@ import re
 import threading
 import time
 import os
+from settings import public_url
 import hashlib
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
@@ -59,7 +60,7 @@ class Metadata:
         for card in cards:
             card['metadata']=self.choose(card.get('metadata'),cache.get(card['id']))
             if card['metadata'] and card['metadata'].get('poster'):
-                card['metadata']=dict(card['metadata'],poster=os.environ.get('CINEMA_PUBLIC_URL','http://192.168.0.221:18093')+'/images/'+card['id'])
+                card['metadata']=dict(card['metadata'],poster=public_url()+'/images/'+card['id'])
         return cards
 
     def poster(self,cid):

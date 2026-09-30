@@ -8,6 +8,7 @@ from fastapi import HTTPException,Request
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from anwap import HEADERS,allowed_media,resolve,BASE
+from settings import public_url
 
 class Streams:
     def __init__(self,catalog):
@@ -19,7 +20,7 @@ class Streams:
         with self.catalog.db() as db:
             db.execute('DELETE FROM stream_tickets WHERE expires_at<?',(now,))
             db.execute('INSERT INTO stream_tickets VALUES (?,?,?,?,?,?,?)',(token,film_id,format_id,item['file_key'],item['stream_url'],now,now+43200))
-        return os.environ.get('CINEMA_PUBLIC_URL','http://192.168.0.221:18093')+'/play/'+token
+        return public_url()+'/play/'+token
     async def stream(self,token,request:Request):
         with self.catalog.db() as db:row=db.execute('SELECT * FROM stream_tickets WHERE ticket=? AND expires_at>?',(token,time.time())).fetchone()
         if not row:raise HTTPException(404,'Playback link expired')

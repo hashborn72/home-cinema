@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import unittest
 import httpx
@@ -58,6 +59,12 @@ class FilePlaybackTests(unittest.TestCase):
         self.assertIsNone(self.progress())
         self.assertNotIn('SECRET',json.dumps(s))
         self.assertIn('index=1',s['stream_url'])
+
+    def test_tv_stream_uses_public_address_not_container_dns(self):
+        with patch.dict(os.environ, {'TORRSERVER_URL':'http://torrserver:8090','TORRSERVER_PUBLIC_URL':'http://192.168.1.144:8090'}):
+            response=self.file_start().json()
+            self.assertTrue(response['stream_url'].startswith('http://192.168.1.144:8090/stream/'))
+            self.assertNotIn('torrserver:',response['stream_url'])
 
     def test_file_selection_validation_and_auth(self):
         self.assertEqual(self.file_start(fid=99).status_code,409)

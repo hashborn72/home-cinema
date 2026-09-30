@@ -7,6 +7,9 @@ dist/
 data/
 *.env
 .env*
+!.env.example
+private/
+backups/
 *.pem
 *.key
 device-token

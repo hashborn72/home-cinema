@@ -1,0 +1,114 @@
+name: home-cinema
+
+x-backend: &backend-image
+  image: local/home-cinema-backend:0.6.1
+  build: ./backend
+  pull_policy: build
+
+x-logs: &logs
+  driver: json-file
+  options: {max-size: "5m", max-file: "2"}
+
+services:
+  init:
+    <<: *backend-image
+    user: "0:0"
+    command: ["python", "stack_init.py"]
+    network_mode: none
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - cinema-data:/data
+      - jackett-config:/jackett
+      - torrserver-config:/torrserver
+      # Optional private migration bundle. Never commit this directory.
+      - ./private:/import:ro
+    logging: *logs
+
+  jackett:
+    # LinuxServer v0.24.2738-ls44, immutable multi-platform digest.
+    image: lscr.io/linuxserver/jackett@sha256:1ae127808334af460d8aa39cdd15f8ddc6b22e931eb0e908a924741d8cbe1ef6
+    environment:
+      PUID: "65532"
+      PGID: "65532"
+      TZ: Europe/Moscow
+      AUTO_UPDATE: "false"
+    depends_on:
+      init: {condition: service_completed_successfully}
+    ports:
+      - "${CINEMA_HOST:-192.168.1.144}:${JACKETT_PORT:-8091}:9117"
+    volumes:
+      - jackett-config:/config
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9117/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    mem_limit: 512m
+    logging: *logs
+
+  torrserver:
+    image: ghcr.io/yourok/torrserver:MatriX.145@sha256:d32d5de9472bc9847aee5c536d34885fdc9332b957d9fc2c707ea064932a583d
+    user: "65532:65532"
+    entrypoint: ["/usr/bin/torrserver"]
+    command: ["--path", "/config", "--port", "8090", "--ip", "0.0.0.0", "--logpath", "/tmp/torrserver.log"]
+    depends_on:
+      init: {condition: service_completed_successfully}
+    ports:
+      - "${CINEMA_HOST:-192.168.1.144}:${TORRSERVER_PORT:-8090}:8090"
+    volumes:
+      - torrserver-config:/config
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8090/echo"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+    mem_limit: 512m
+    logging: *logs
+
+  backend:
+    <<: *backend-image
+    environment:
+      CINEMA_PUBLIC_URL: "http://${CINEMA_HOST:-192.168.1.144}:${BACKEND_PORT:-8093}"
+      JACKETT_URL: http://jackett:9117
+      JACKETT_LEGACY_URLS: "http://192.168.1.144:8091"
+      TORRSERVER_URL: http://torrserver:8090
+      TORRSERVER_PUBLIC_URL: "http://${CINEMA_HOST:-192.168.1.144}:${TORRSERVER_PORT:-8090}"
+      CINEMA_STACK_SETUP: "1"
+    depends_on:
+      init: {condition: service_completed_successfully}
+      jackett: {condition: service_healthy}
+      torrserver: {condition: service_healthy}
+    ports:
+      - "${CINEMA_HOST:-192.168.1.144}:${BACKEND_PORT:-8093}:8080"
+    volumes:
+      - cinema-data:/data
+      - ./dist:/releases:ro
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    mem_limit: 256m
+    logging: *logs
+
+volumes:
+  cinema-data:
+  jackett-config:
+  torrserver-config:

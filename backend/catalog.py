@@ -13,6 +13,7 @@ import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from settings import jackett_url
 
 SOURCES = {'lostfilm': 'LostFilm — новые сериалы', 'exkinoray': 'ExKinoRay — новые раздачи фильмов', 'rutor': 'RuTor — популярное','anwap':'Anwap — новые фильмы'}
 TTL = 600
@@ -169,7 +170,7 @@ class Catalog:
             params = {'apikey':key,'t':'search','limit':100}
             # ExKinoRay includes genuine video mapped to TV; do not silently discard it.
             if source != 'rutor': params['cat'] = '5000' if source == 'lostfilm' else '2000,5000'
-            rows = parse_feed(fetch('http://192.168.1.144:8091/api/v2.0/indexers/'+source+'/results/torznab/api?'+urllib.parse.urlencode(params)),source)
+            rows = parse_feed(fetch(jackett_url()+'/api/v2.0/indexers/'+source+'/results/torznab/api?'+urllib.parse.urlencode(params)),source)
             if source == 'rutor':
                 with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
                     for row,kind in zip(rows,pool.map(self.rutor_kind,rows)): row['kind'] = kind
