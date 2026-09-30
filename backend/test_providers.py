@@ -48,6 +48,16 @@ class ProviderTests(unittest.TestCase):
             fetch.assert_called_once_with('exkinoray','Archive',100,100)
         self.assertEqual(state['status'],'ready');self.assertEqual(len(state['results']),1)
         self.assertFalse(state['has_more']);self.assertEqual(self.cat.home()['shelves'][1]['results'],[])
+    def test_paging_same_show_with_different_releases_is_not_the_end(self):
+        rows=[release(str(i),'Same Show S01E%02d (2020) 1080p'%(i+1),cats=[5000]) for i in range(100)]
+        with patch.object(self.p,'jackett',return_value=rows):
+            self.p.start('exkinoray');self.wait('exkinoray')
+        other=[dict(r,id='next'+r['id']) for r in rows]
+        with patch.object(self.p,'jackett',return_value=other):
+            self.p.start('exkinoray',offset=100);second=self.wait('exkinoray',offset=100)
+            self.assertTrue(second['has_more'])
+            self.p.start('exkinoray',offset=200);third=self.wait('exkinoray',offset=200)
+            self.assertFalse(third['has_more'])
     def test_failure_redacts_secrets_and_can_retry(self):
         with patch.object(self.p,'jackett',side_effect=RuntimeError('apikey=SECRET')):
             self.p.start('rutor','test');state=self.wait('rutor','test')

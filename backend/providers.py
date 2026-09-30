@@ -128,10 +128,10 @@ class Providers:
                     stored=[json.loads(r['payload']) for r in db.execute('SELECT payload FROM catalog_releases WHERE source=?',(source,))]
                 cards=self.catalog.cards([r for r in stored if r['id'] in ids])
                 cards.sort(key=lambda c:c['published_at'],reverse=True)
-                result.update(results=cards,has_more=more and not cid,next_offset=offset+step,truncated=bool(cid and more))
+                result.update(results=cards,has_more=more and not cid,next_offset=offset+step,truncated=bool(cid and more),page_signature=digest('|'.join(sorted(ids))))
                 if offset and not cid and source in ('rutor','exkinoray'):
                     previous=self.state(source,query,max(0,offset-step))
-                    if ids and {c['id'] for c in cards}=={c['id'] for c in previous.get('results',[])}:
+                    if ids and result['page_signature']==previous.get('page_signature'):
                         result['has_more']=False
                         result['notice']='Источник повторил предыдущую страницу; используйте поиск по названию.'
             status='ready'
