@@ -7,7 +7,7 @@ import httpx
 from fastapi import HTTPException,Request
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
-from anwap import HEADERS,allowed_media,resolve,BASE
+from anwap import HEADERS,allowed_media,resolve,BASE,source_path
 from settings import public_url
 
 class Streams:
@@ -35,7 +35,7 @@ class Streams:
             with self.catalog.db() as db:db.execute('UPDATE stream_tickets SET url=?,refreshed_at=? WHERE ticket=?',(url,time.time(),token))
         if not allowed_media(url):raise HTTPException(502,'Invalid source')
         client=httpx.AsyncClient(timeout=httpx.Timeout(20,connect=8),follow_redirects=False,trust_env=False)
-        headers=dict(HEADERS,Referer=BASE+'/films/'+str(row['film_id']))
+        headers=dict(HEADERS,Referer=BASE+source_path(row['film_id']))
         if byte_range:headers['Range']=byte_range
         try:
             upstream=await client.send(client.build_request('GET',url,headers=headers),stream=True)

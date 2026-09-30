@@ -29,15 +29,17 @@ import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.foundation.BorderStroke
 
 private val Ink = Color(0xFF101722)
 private val Muted = Color(0xFFA8B5C7)
 private fun JSONArray.objects() = (0 until length()).map { getJSONObject(it) }
 private fun JSONObject.optional(name: String) = if (isNull(name)) "" else optString(name)
-private fun displayTitle(card:JSONObject) = card.optJSONObject("metadata")?.optional("title")?.takeIf {it.isNotBlank()} ?: card.optString("provider_title").takeIf{it.isNotBlank()} ?: card.getString("title")
-private fun cardSubtitle(card: JSONObject): String {
+internal fun displayTitle(card:JSONObject) = card.optJSONObject("metadata")?.optional("title")?.takeIf {it.isNotBlank()} ?: card.optString("provider_title").takeIf{it.isNotBlank()} ?: card.getString("title")
+internal fun cardSubtitle(card: JSONObject): String {
     val kind = if (card.optString("media_type") == "tv") "Сериал / ТВ" else "Фильм"
-    return listOf(kind,card.optional("year")).filter { it.isNotEmpty() }.joinToString(" · ")
+    return listOf(kind,card.optional("year").ifEmpty {card.optJSONObject("metadata")?.optional("year") ?: ""}).filter { it.isNotEmpty() }.joinToString(" · ")
 }
 
 @Composable
@@ -59,11 +61,9 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
     var prepareAttempt by remember { mutableIntStateOf(0) }
     var autoResumeFile by remember {mutableStateOf<Int?>(null)}
     var searchingAnwap by remember {mutableStateOf(false)}
-    var confirmWatched by remember {mutableStateOf(false)}
+    val detailState=remember {DetailState()}
     var flagBusy by remember {mutableStateOf(false)}
     val providerState = remember { ProviderState() }
-    var selectedSeason by remember {mutableStateOf<Int?>(null)}
-    var selectedEpisode by remember {mutableStateOf<Int?>(null)}
     var seriesLoading by remember {mutableStateOf(false)}
     var seriesError by remember {mutableStateOf("")}
     var seriesAttempt by remember {mutableIntStateOf(0)}
@@ -105,15 +105,22 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
     }
     LaunchedEffect(detail?.optString("id"),seriesAttempt) {
         val original=detail ?: return@LaunchedEffect
-        selectedSeason=null;selectedEpisode=null;seriesError=""
-        if(original.optString("media_type")!="tv" || original.optJSONArray("sources")?.toString()?.contains("anwap")==true) return@LaunchedEffect
+        seriesError=""
+        if(original.optString("media_type")!="tv") return@LaunchedEffect
         val cid=original.getString("id")
         seriesLoading=true
         try {
             val path="/api/v1/catalog/items/$cid/expand"
-            var state=post(path,JSONObject())
+            var state=withTimeout(30000) {
+                while(true) {
+                    try {return@withTimeout post(path,JSONObject())}
+                    catch(e:CancellationException) {throw e}
+                    catch(e:Exception) {delay(3000)}
+                }
+                @Suppress("UNREACHABLE_CODE") JSONObject()
+            }
             withTimeout(210000) {
-                while(state.optString("status")=="loading") {delay(1500);state=request(path)}
+                while(state.optString("status")=="loading" || state.optBoolean("refreshing")) {delay(1500);state=request(path)}
             }
             check(state.optString("status")=="ready") {"Источник не ответил. Доступные раздачи оставлены ниже."}
             val expanded=request("/api/v1/catalog/items/$cid")
@@ -122,9 +129,9 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                 detail=expanded
                 if(state.optBoolean("truncated")) seriesError="Источник ограничил число раздач; список может быть неполным."
             }
-        } catch(e:TimeoutCancellationException) {seriesError="Поиск серий ещё не завершён. Нажми «Обновить серии»."}
+        } catch(e:TimeoutCancellationException) {seriesError="Источник отвечает долго; сохранённые серии доступны."}
         catch(e:CancellationException) {throw e}
-        catch(e:Exception) {seriesError="Не удалось получить все серии. Нажми «Обновить серии»."}
+        catch(e:Exception) {seriesError="Обновление временно недоступно; можно повторить."}
         finally {seriesLoading=false}
     }
     LaunchedEffect(detail,restoreFocus) {
@@ -184,14 +191,15 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
         }
     }
     BackHandler(enabled = detail != null || section != "Главная") {
-        if(confirmWatched) confirmWatched=false else if (release != null) {release = null;autoResumeFile=null} else if (detail != null) back() else section = "Главная"
+        if (release != null) {release = null;autoResumeFile=null} else if (detail != null) back() else section = "Главная"
     }
     fun open(card: JSONObject, row: String) {
         if (opening) return
         selectedId = card.getString("id"); selectedRow = row
+        detailState.season=null;detailState.selected=""
         scope.launch {
             opening = true
-            try { detail = request("/api/v1/catalog/items/"+card.getString("id")).apply {card.optJSONObject("resume_target")?.let {put("resume_target",it)}}; confirmWatched=false; error = "" }
+            try { detail = request("/api/v1/catalog/items/"+card.getString("id")).apply {card.optJSONObject("resume_target")?.let {put("resume_target",it)}}; detailState.scroll.scrollToItem(0); error = "" }
             catch (_: Exception) { error = "Не удалось открыть карточку. Повтори попытку." }
             finally { opening = false }
         }
@@ -218,8 +226,8 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
     MaterialTheme(colorScheme=darkColorScheme()) {
         if (release != null) {
             val current = release!!
-            LazyColumn(Modifier.fillMaxSize().background(Ink).padding(40.dp),verticalArrangement=Arrangement.spacedBy(18.dp)) {
-                item { Button(onClick={release=null}) {Text("← К раздачам")} }
+            LazyColumn(Modifier.fillMaxSize().background(Ink).padding(28.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+                item { CompactButton("←",{release=null}) }
                 item { Text(current.getString("title"),fontSize=24.sp,color=Color.White) }
                 item { Text("Выбери файл. Позиция сохраняется отдельно для каждого файла и версии раздачи.",color=Muted) }
                 if(preparing) item { Text(if(current.optString("kind")=="direct") "Получаем варианты прямого видео…" else "Получаем список файлов через TorrServer…",color=Color(0xFF5EEAD4)) }
@@ -251,102 +259,25 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                 }},enabled=!preparing) {Text("Обновить позиции")} }
             }
         } else if (detail != null) {
-            val item = detail!!
-            LazyColumn(Modifier.fillMaxSize().background(Ink).padding(40.dp), verticalArrangement=Arrangement.spacedBy(16.dp)) {
-                item { Button(onClick={back()}) { Text("← К каталогу") } }
-                item { Text(displayTitle(item),fontSize=32.sp,color=Color.White) }
-                item { Text(cardSubtitle(item)+" · "+item.optInt("release_count")+" раздач",color=Muted) }
-                val allReleases=item.getJSONArray("releases").objects()
-                val isSeries=item.optString("media_type")=="tv"
-                if(isSeries) {
-                    item {
-                        Text("Сезоны и серии",fontSize=23.sp,color=Color.White)
-                        if(seriesLoading) Text("Ищем серии у поставщика — это может занять несколько минут…",color=Color(0xFF5EEAD4))
-                        if(seriesError.isNotEmpty()) Text(seriesError,color=Color(0xFFFBBF24))
-                        Button(enabled=!seriesLoading,onClick={seriesAttempt++}) {Text("Обновить серии")}
-                    }
-                    val seasons=allReleases.mapNotNull{episodeRange(it.getString("title")).season}.distinct().sorted()
-                    item {
-                        LazyRow(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-                            item {Button(onClick={selectedSeason=null;selectedEpisode=null}) {Text(if(selectedSeason==null) "✓ Все сезоны" else "Все сезоны")}}
-                            items(seasons) {season -> Button(onClick={selectedSeason=season;selectedEpisode=null}) {Text((if(selectedSeason==season) "✓ " else "")+"Сезон $season")}}
+            val item=detail!!
+            DetailScreen(item,detailState,seriesLoading,seriesError.ifEmpty{error},flagBusy,
+                onBack={back()},onFavorite={flag("favorite")},
+                onRelease={autoResumeFile=null;release=it},
+                onResume={
+                    item.optJSONObject("resume_target")?.let {target ->
+                        item.getJSONArray("releases").objects().find {it.getString("id")==target.getString("release_id")}?.let {
+                            autoResumeFile=target.getInt("file_id");release=it
                         }
                     }
-                    if(selectedSeason!=null) {
-                        val episodes=allReleases.flatMap {r -> val ep=episodeRange(r.getString("title"));
-                            if(ep.season==selectedSeason && ep.first!=null) (ep.first..(ep.last ?: ep.first)).toList() else emptyList()
-                        }.distinct().sorted()
-                        item {
-                            LazyRow(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-                                item {Button(onClick={selectedEpisode=null}) {Text(if(selectedEpisode==null) "✓ Все серии" else "Все серии")}}
-                                items(episodes) {episode -> Button(onClick={selectedEpisode=episode}) {Text((if(selectedEpisode==episode) "✓ " else "")+"Серия $episode")}}
-                            }
-                            Text("Сезон целиком / сборник: выбери качество раздачи, затем нужный видеофайл-серию.",color=Muted,fontSize=13.sp)
-                        }
-                    }
-                }
-                item {
-                    Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-                        listOf("favorite" to "Избранное","watch_later" to "Позже","watched" to "Просмотрено").forEach { (key,label) ->
-                            Button(enabled=!flagBusy,onClick={if(key=="watched" && item.optString("media_type")=="tv" && item.optJSONObject("library")?.optBoolean(key)!=true) confirmWatched=true else flag(key)}) {Text((if(item.optJSONObject("library")?.optBoolean(key)==true) "✓ " else "+ ")+label)}
-                        }
-                    }
-                    Text("Отметки можно снять повторным нажатием. «Просмотрено» относится ко всей карточке.",color=Muted,fontSize=12.sp)
-                    if(error.isNotEmpty()) Text(error,color=Color(0xFFFBBF24))
-                    if(confirmWatched) Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-                        Text("Пометить сериал целиком?",color=Muted)
-                        Button(onClick={flag("watched");confirmWatched=false}) {Text("Да, целиком")}
-                        Button(onClick={confirmWatched=false}) {Text("Отмена")}
-                    }
-                    item.optJSONObject("resume_target")?.let { target ->
-                        Text(target.optString("file_title"),color=Muted,fontSize=13.sp)
-                        Button(onClick={
-                            val found=item.getJSONArray("releases").objects().find {it.getString("id")==target.getString("release_id")}
-                            if(found!=null) {autoResumeFile=target.getInt("file_id");release=found}
-                        },enabled=!playerBusy) {Text("Продолжить этот файл")}
-                    }
-                }
-                val metadata=item.optJSONObject("metadata")
-                item {
-                    Row(horizontalArrangement=Arrangement.spacedBy(24.dp)) {
-                        if(metadata?.optional("poster")?.isNotEmpty()==true) CinemaPoster(metadata.getString("poster"),Modifier.width(145.dp).height(215.dp))
-                        Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                            Text(metadata?.optional("description")?.ifEmpty {null} ?: "Нет уверенного совпадения с базой описаний. Доступные раздачи можно открыть ниже.",color=Muted,fontSize=17.sp)
-                            if(metadata!=null) {
-                                Text(metadata.optString("provider")+" · рейтинг: "+metadata.optional("rating").ifEmpty{"—"}+" · "+metadata.optString("language")+" · "+metadata.optString("license"),color=Muted,fontSize=12.sp)
-                                Button(onClick={runCatching {context.startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(metadata.getString("url"))))}}) {Text("Источник: "+metadata.optString("provider"))}
-                            }
-                        }
-                    }
-                }
-                item { Text("Доступные раздачи",fontSize=23.sp,color=Color.White) }
-                val shownReleases=allReleases.filter {r ->
-                    val ep=episodeRange(r.getString("title"))
-                    !isSeries || ((selectedSeason==null || ep.season==selectedSeason) &&
-                        (selectedEpisode==null || ep.first==null || selectedEpisode!! in ep.first..(ep.last ?: ep.first)))
-                }.let {rows -> if(isSeries) rows.sortedWith(compareBy({episodeRange(it.getString("title")).season ?: Int.MAX_VALUE},{episodeRange(it.getString("title")).first ?: Int.MAX_VALUE})) else rows}
-                if(shownReleases.isEmpty()) item {Text(if(seriesLoading) "Ожидаем список серий…" else "Для выбранного сезона пока нет доступных раздач.",color=Muted)}
-                items(shownReleases,key={it.getString("id")}) { rowRelease ->
-                    val size = if(rowRelease.isNull("size")) "Размер неизвестен" else "%.1f ГБ".format(rowRelease.optDouble("size")/1073741824.0)
-                    Surface(onClick={autoResumeFile=null;release=rowRelease}, modifier=Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(18.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
-                            if(isSeries) Text(episodeRange(rowRelease.getString("title")).label()+" · "+rowRelease.optional("quality").ifEmpty{"другое качество"},fontSize=20.sp)
-                            Text(rowRelease.getString("title"),fontSize=18.sp,maxLines=3,overflow=TextOverflow.Ellipsis)
-                            Text(if(rowRelease.optString("kind")=="direct") "Anwap · прямое видео · выбрать качество" else rowRelease.getString("source")+" · "+size+" · сиды: "+rowRelease.optional("seeders").ifEmpty{"неизвестно"},fontSize=14.sp)
-                        }
-                    }
-                }
-                item { Text("Выбери раздачу → видеофайл → Just Player",color=Muted,fontSize=14.sp) }
-            }
+                },onRetry={seriesAttempt++})
         } else if(section=="Источники") {
             ProviderScreen(providerState,request,post,onBack={section="Главная"},onOpen={open(it,"Источники")})
         } else {
-            LazyColumn(Modifier.fillMaxSize().background(Ink).padding(horizontal=40.dp,vertical=24.dp),state=columnState,verticalArrangement=Arrangement.spacedBy(20.dp)) {
-                item { Text("ДОМАШНЯЯ МЕДИАТЕКА",color=Color(0xFF5EEAD4),fontSize=18.sp) }
+            LazyColumn(Modifier.fillMaxSize().background(Ink).padding(horizontal=28.dp,vertical=12.dp),state=columnState,verticalArrangement=Arrangement.spacedBy(6.dp)) {
                 item {
                     Row(horizontalArrangement=Arrangement.spacedBy(14.dp)) {
                         listOf("Главная","Фильмы","Сериалы","Поиск","Моё","Источники").forEach { name ->
-                            Button(modifier=Modifier.focusRequester(menuFocusRequesters.getOrPut(name){FocusRequester()}),onClick={section=name}) { Text(if(section==name) "• $name" else name) }
+                            CompactButton(if(section==name) "• $name" else name,{section=name},Modifier.focusRequester(menuFocusRequesters.getOrPut(name){FocusRequester()}))
                         }
                     }
                 }
@@ -384,8 +315,10 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                     shelves.forEachIndexed { index,shelf ->
                         val row=shelf.getString("id")
                         item(key=row+"-heading") {
-                            Text(shelf.getString("title"),fontSize=25.sp,color=Color.White)
-                            if(visibleSection=="Главная") Button(onClick={providerState.select(row);section="Источники"}) {Text("Открыть "+providerName(row))}
+                            Row(horizontalArrangement=Arrangement.spacedBy(16.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+                                Text(shelf.getString("title"),fontSize=20.sp,color=Color.White)
+                                if(visibleSection=="Главная") CompactButton("Все →",{providerState.select(row);section="Источники"})
+                            }
                             val note = when {
                                 visibleSection=="Моё" -> "Сохранено на вашем сервере"
                                 shelf.optBoolean("stale") -> "Сохранённые данные · источник временно недоступен или обновляется"
@@ -395,12 +328,12 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                                 row=="anwap" -> "Прямое видео · доступное разрешение указано при выборе"
                                 else -> "Последние доступные раздачи · одинаковые качества сгруппированы"
                             }
-                            Text(note,color=Muted,fontSize=13.sp)
+                            if(shelf.optBoolean("stale") || shelf.optBoolean("warming")) Text(note,color=Muted,fontSize=12.sp)
                         }
                         val cards=shelf.getJSONArray("results").objects()
                         item(key=row+"-cards") {
                             if(cards.isEmpty()) Text("Пока нет карточек",color=Muted)
-                            LazyRow(state=rowStates.getOrPut(row){androidx.compose.foundation.lazy.LazyListState()},horizontalArrangement=Arrangement.spacedBy(16.dp),contentPadding=PaddingValues(8.dp)) {
+                            LazyRow(state=rowStates.getOrPut(row){androidx.compose.foundation.lazy.LazyListState()},horizontalArrangement=Arrangement.spacedBy(12.dp),contentPadding=PaddingValues(vertical=3.dp)) {
                                 items(cards,key={it.getString("id")}) { card ->
                                     val key=row+":"+card.getString("id")
                                     CinemaCard(card,focusRequesters.getOrPut(key){FocusRequester()}) {open(card,row)}
@@ -411,7 +344,7 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                 } else {
                     val cards=visibleData.optJSONArray("results")?.objects() ?: emptyList()
                     item { Text("Найдено: "+visibleData.optInt("total")+" · каталог уже полученных раздач",color=Muted) }
-                    items(cards.chunked(4)) { chunk ->
+                    items(cards.chunked(5)) { chunk ->
                         Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
                             chunk.forEach { card ->
                                 val key=section+":"+card.getString("id")
@@ -434,21 +367,27 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
 
 @Composable
 internal fun CinemaCard(card:JSONObject,requester:FocusRequester,onClick:()->Unit) {
-    Surface(onClick=onClick,modifier=Modifier.width(202.dp).height(310.dp).focusRequester(requester)) {
-        Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+    val width=((LocalConfiguration.current.screenWidthDp-56-48)/5f).dp
+    Surface(onClick=onClick,modifier=Modifier.width(width).height(188.dp).focusRequester(requester),
+        colors=ClickableSurfaceDefaults.colors(containerColor=Color.Transparent,focusedContainerColor=Color.Transparent,
+            contentColor=Color.White,focusedContentColor=Color.White),
+        scale=ClickableSurfaceDefaults.scale(focusedScale=1.025f),
+        border=ClickableSurfaceDefaults.border(focusedBorder=Border(BorderStroke(2.dp,Color(0xFF5EEAD4))))) {
+        Column(verticalArrangement=Arrangement.spacedBy(3.dp)) {
             val poster=card.optJSONObject("metadata")?.optional("poster")
-            if(!poster.isNullOrEmpty()) CinemaPoster(poster,Modifier.fillMaxWidth().height(145.dp))
-            else Box(Modifier.fillMaxWidth().height(145.dp).background(Color(0xFF263244))) {Text("Без постера",modifier=Modifier.padding(16.dp),color=Muted,fontSize=14.sp)}
-            Text(cardSubtitle(card),fontSize=13.sp)
-            Text(displayTitle(card),fontSize=20.sp,maxLines=3,overflow=TextOverflow.Ellipsis,modifier=Modifier.weight(1f))
-            Text(if(card.optBoolean("directory")) "Открыть сезоны и серии" else "Раздач: "+card.optInt("release_count")+" · сиды: "+card.optional("seeders").ifEmpty{"?"},fontSize=12.sp)
-            card.optJSONObject("resume_target")?.let { target -> Text("Позиция: ${formatPlaybackPosition(target.optLong("position_ms"))}",fontSize=12.sp) }
+            if(!poster.isNullOrEmpty()) CinemaPoster(poster,Modifier.fillMaxWidth().height(128.dp))
+            else Box(Modifier.fillMaxWidth().height(128.dp).background(Color(0xFF263244))) {
+                Text(displayTitle(card),modifier=Modifier.padding(10.dp),color=Muted,fontSize=16.sp,maxLines=4)
+            }
+            Text(displayTitle(card),fontSize=17.sp,maxLines=2,overflow=TextOverflow.Ellipsis,lineHeight=19.sp)
+            val year=card.optional("year").ifEmpty {card.optJSONObject("metadata")?.optional("year") ?: ""}
+            if(year.isNotEmpty()) Text(year,fontSize=12.sp,color=Muted)
         }
     }
 }
 
 @Composable
-private fun CinemaPoster(url:String,modifier:Modifier) {
+internal fun CinemaPoster(url:String,modifier:Modifier) {
     var state by remember(url) {mutableIntStateOf(0)}
     Box(modifier.background(Color(0xFF263244))) {
         if(state!=1) Text(if(state==2) "Постер временно недоступен" else "Загрузка постера…",modifier=Modifier.padding(16.dp),color=Muted,fontSize=13.sp)

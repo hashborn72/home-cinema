@@ -79,5 +79,7 @@ class TMDB:
         return {'provider': 'TMDB', 'provider_id': item['id'],
                 'url': 'https://www.themoviedb.org/' + card['media_type'] + '/' + str(item['id']),
                 'title': item.get('title') or item.get('name'), 'description': (item.get('overview') or '')[:6000],
+                'original_title': item.get('original_title') or item.get('original_name'),
+                'year': (item.get('release_date') or item.get('first_air_date') or '')[:4],
                 'poster': poster, 'rating': rating, 'language': 'ru-RU', 'license': NOTICE,
                 'match': 'unique_exact_title_year' if card['media_type'] == 'movie' else 'unique_exact_title'}

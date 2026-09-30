@@ -18,6 +18,7 @@ from anwap import Search
 from streaming import Streams
 from pairing import Pairing
 from providers import Providers
+from indexing import Indexer
 from settings import public_url
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -115,12 +116,13 @@ def create_app(data_dir: Path, test_token: str | None = None):
     anwap_search = Search(catalog)
     streams = Streams(catalog)
     providers = Providers(catalog)
+    indexer = Indexer(catalog,providers,metadata)
     @asynccontextmanager
     async def lifespan(app):
-        if test_token is None: catalog.start(); metadata.start()
+        if test_token is None: catalog.start(); metadata.start(); indexer.start()
         try: yield
         finally:
-            catalog.stop(); metadata.stop()
+            catalog.stop(); metadata.stop(); indexer.stop()
             torrents.pool.shutdown(wait=False,cancel_futures=True)
             providers.pool.shutdown(wait=False,cancel_futures=True)
     app = FastAPI(title='Home Cinema development backend', docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -171,10 +173,10 @@ def create_app(data_dir: Path, test_token: str | None = None):
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'version': '0.8.0', 'environment': 'compose' if os.environ.get('CINEMA_STACK_SETUP') == '1' else 'development'}
+        return {'status': 'ok', 'version': '0.9.0', 'environment': 'compose' if os.environ.get('CINEMA_STACK_SETUP') == '1' else 'development'}
 
     @app.get('/api/v1/metadata/status', dependencies=[Depends(auth)])
-    def metadata_status():return metadata.status()
+    def metadata_status():return dict(metadata.status(),index_last_success=indexer.last_success,index_error=indexer.last_error)
 
     @app.get('/play/{ticket}')
     async def play_stream(ticket: str,request:Request):return await streams.stream(ticket,request)
@@ -265,6 +267,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
         try: response=(providers.start if start else providers.state)(source,query,offset)
         except ValueError: raise HTTPException(422,'Invalid provider query')
         except RuntimeError: raise HTTPException(429,'Provider is busy; retry shortly')
+        indexer.touch(response.get('results',[]))
         metadata.enrich(response.get('results',[]))
         return response
 
@@ -295,6 +298,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
     def catalog_detail(content_id: str):
         item = catalog.detail(content_id)
         if item is None: raise HTTPException(404, 'Content not found')
+        indexer.touch([item])
         metadata.enrich([item])
         item['library']=library.flags(content_id)
         return item

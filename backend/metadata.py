@@ -38,6 +38,8 @@ class Metadata:
         self.last_error=None
         self.last_success=None
         self.poster_failures={}
+        self.priority={}
+        self.priority_lock=threading.Lock()
         with catalog.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS metadata_cache(content_id TEXT PRIMARY KEY,payload TEXT,checked_at REAL NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS metadata_checks(content_id TEXT,provider TEXT,checked_at REAL NOT NULL,PRIMARY KEY(content_id,provider))')
@@ -45,7 +47,14 @@ class Metadata:
     @staticmethod
     def choose(native,cached):
         # Keep native Anwap data as fallback, but prefer a confirmed TMDB match.
-        return cached if cached and cached.get('provider')=='TMDB' else native or cached
+        if cached and cached.get('provider')=='TMDB':
+            return dict(cached,poster=cached.get('poster') or (native or {}).get('poster'))
+        return native or cached
+
+    def prioritize(self,cards):
+        with self.priority_lock:
+            for card in cards[:40]: self.priority[card['id']]=card
+            while len(self.priority)>200: self.priority.pop(next(iter(self.priority)))
 
     def status(self):
         with self.catalog.db() as db:
@@ -57,8 +66,9 @@ class Metadata:
     def enrich(self,cards):
         with self.catalog.db() as db:
             cache={r['content_id']:json.loads(r['payload']) for r in db.execute('SELECT * FROM metadata_cache WHERE payload IS NOT NULL')}
+            native={r['id']:json.loads(r['payload']).get('metadata') for r in db.execute('SELECT * FROM catalog_provider_items')}
         for card in cards:
-            card['metadata']=self.choose(card.get('metadata'),cache.get(card['id']))
+            card['metadata']=self.choose(card.get('metadata') or native.get(card['id']),cache.get(card['id']))
             if card['metadata'] and card['metadata'].get('poster'):
                 card['metadata']=dict(card['metadata'],poster=public_url()+'/images/'+card['id'])
         return cards
@@ -83,7 +93,7 @@ class Metadata:
         p=urlparse(url)
         if p.scheme!='https' or p.netloc not in ('mm.anwap.media','static.tvmaze.com','image.tmdb.org','www.lostfilm.tv') or p.query or p.fragment:raise KeyError('Invalid poster')
         if p.netloc=='www.lostfilm.tv' and not re.fullmatch(r'/Static/Images/\d+/Posters/image(?:_s\d+)?\.jpg',p.path):raise KeyError('Invalid poster')
-        if p.netloc=='mm.anwap.media' and not re.fullmatch(r'/films/screen/\d+\.jpg',p.path):raise KeyError('Invalid poster')
+        if p.netloc=='mm.anwap.media' and not re.fullmatch(r'/(?:films/screen|serials/posts)/\d+\.jpg',p.path):raise KeyError('Invalid poster')
         if p.netloc=='image.tmdb.org' and not re.fullmatch(r'/t/p/w500/[A-Za-z0-9]+\.(?:jpg|png)',p.path):raise KeyError('Invalid poster')
         folder=self.catalog.data_dir/'posters';folder.mkdir(mode=0o700,exist_ok=True)
         path=folder/hashlib.sha256(url.encode()).hexdigest()
@@ -105,6 +115,24 @@ class Metadata:
             if os.path.exists(tmp):os.unlink(tmp)
         return path
 
+    def refresh_native(self,card):
+        if card.get('sources')==['lostfilm']:
+            with self.catalog.db() as db:
+                native=db.execute('SELECT 1 FROM catalog_provider_items WHERE id=?',(card['id'],)).fetchone()
+                check=db.execute("SELECT checked_at FROM metadata_checks WHERE content_id=? AND provider='LostFilm'",(card['id'],)).fetchone()
+            if not native and (not check or time.time()-check[0]>86400):
+                # Ambiguous TMDB titles (e.g. remakes) still get the provider's exact-ID poster.
+                try:
+                    from providers import lostfilm_directory
+                    found,_=lostfilm_directory(card['title'],0)
+                    with self.catalog.db() as db:
+                        for match in found:
+                            if match['id']==card['id']:
+                                db.execute('INSERT OR REPLACE INTO catalog_provider_items VALUES (?,?)',(match['id'],json.dumps(match)))
+                        db.execute('INSERT OR REPLACE INTO metadata_checks VALUES (?,?,?)',(card['id'],'LostFilm',time.time()))
+                except Exception:
+                    with self.catalog.db() as db:db.execute('INSERT OR REPLACE INTO metadata_checks VALUES (?,?,?)',(card['id'],'LostFilm',time.time()-86100))
+
     def refresh(self,card):
         provider='TMDB' if self.tmdb.enabled() else 'TVmaze'
         if provider=='TMDB':metadata=self.tmdb.lookup(card)
@@ -124,19 +152,32 @@ class Metadata:
             while not self.stop_event.is_set():
                 with self.catalog.db() as db:
                     checked={r['content_id']:r['checked_at'] for r in db.execute('SELECT * FROM metadata_checks WHERE provider=?',('TMDB' if self.tmdb.enabled() else 'TVmaze',))}
-                cards={c['id']:c for row in self.catalog.home()['shelves'] for c in row['results']}
-                for c in self.catalog.search()['results']:cards.setdefault(c['id'],c)
+                    for row in db.execute('SELECT content_id,payload FROM metadata_cache WHERE payload IS NOT NULL'):
+                        old=json.loads(row['payload'])
+                        if old.get('provider')=='TMDB' and 'year' not in old:checked.pop(row['content_id'],None)
+                with self.priority_lock:
+                    cards=self.priority.copy();self.priority.clear()
+                for row in self.catalog.home()['shelves']:
+                    for c in row['results']:cards.setdefault(c['id'],c)
+                with self.catalog.db() as db:
+                    for row in db.execute('SELECT payload FROM catalog_provider_items LIMIT 2000'):
+                        c=json.loads(row['payload']);cards.setdefault(c['id'],c)
+                for c in self.catalog.cards(self.catalog.snapshot()[1]):cards.setdefault(c['id'],c)
                 for card in cards.values():
                     if self.stop_event.is_set(): return
-                    if time.time()<self.retry_after:break
-                    if time.time()-checked.get(card['id'],0)<86400: continue
-                    try: self.refresh(card)
-                    except Exception:
-                        self.last_error='Metadata source unavailable'
-                        self.retry_after=time.time()+900
-                        break  # Preserve cached data and avoid hammering an unavailable API.
-                    if self.stop_event.wait(1): return
-                self.stop_event.wait(30)
+                    self.refresh_native(card)
+                    if time.time()>=self.retry_after and time.time()-checked.get(card['id'],0)>=86400:
+                        try: self.refresh(card)
+                        except Exception:
+                            self.last_error='Metadata source unavailable'
+                            self.retry_after=time.time()+900
+                    # Cache image bytes as well as metadata; provider posters work even if TMDB is down.
+                    try: self.poster(card['id'])
+                    except Exception: pass
+                    if self.stop_event.wait(.5): return
+                    with self.priority_lock:
+                        if self.priority: break
+                self.stop_event.wait(2)
         threading.Thread(target=run,daemon=True).start()
 
     def stop(self): self.stop_event.set()

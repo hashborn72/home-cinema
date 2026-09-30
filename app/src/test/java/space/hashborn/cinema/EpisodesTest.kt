@@ -11,4 +11,7 @@ class EpisodesTest {
     @Test fun unknownIsNotGuessed() {assertEquals(EpisodeRange(null,null,null),episodeRange("Movie 2026 1080p"))}
     @Test fun malformedRangeBounded() {assertEquals(EpisodeRange(1,1,1),episodeRange("Show S01E01-999"))}
     @Test fun russian() {assertEquals(EpisodeRange(1,1,8),episodeRange("Сезон: 1 Серии: 1-8"))}
+    @Test fun compactEpisodeLabel() {assertEquals("1 сезон · 7 серия",EpisodeRange(1,7,7).compactLabel())}
+    @Test fun compactPackLabel() {assertEquals("2 сезон · сборник",EpisodeRange(2,null,null).compactLabel())}
+    @Test fun qualityOrdering() {assertTrue(qualityRank("1080p")>qualityRank("720p"));assertEquals(0,qualityRank("WEB"))}
 }

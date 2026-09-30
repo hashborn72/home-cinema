@@ -145,6 +145,8 @@ class Catalog:
             kind = row.get('kind') if source == 'rutor' else ('movie' if any(2000 <= c < 3000 for c in cats) else 'tv' if any(5000 <= c < 6000 for c in cats) else None)
             if kind not in ('movie','tv') or (source == 'lostfilm' and kind != 'tv'): continue
             item = dict(row, **{'content':identify(row['raw'],source,kind,row['id'])})
+            if source=='anwap' and row.get('series_card'):
+                item['content']=dict(row['series_card'])
             if row.get('metadata'):item['content']['metadata']=row['metadata']
             accepted.append(item)
         now = time.time()
@@ -235,6 +237,11 @@ class Catalog:
     def search(self, query='', kind=None):
         _,releases = self.snapshot()
         cards = self.cards(releases)
+        known={c['id'] for c in cards}
+        with self.db() as db:
+            for row in db.execute('SELECT payload FROM catalog_provider_items'):
+                card=json.loads(row['payload'])
+                if card['id'] not in known:cards.append(card);known.add(card['id'])
         terms = normal(query).split()
         metadata_titles={}
         if terms:

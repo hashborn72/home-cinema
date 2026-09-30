@@ -119,7 +119,7 @@ class Search:
             with self.lock:self.busy=False
 
 def resolve(film_id,format_id):
-    fresh=parse_movie(html_page('/films/'+str(film_id)),film_id)
+    fresh=source_page(film_id)
     file=next((f for f in fresh['formats'] if f['id']==format_id),None)
     if file is None:raise ValueError('Format no longer available')
     url=BASE+file['load']
@@ -137,3 +137,14 @@ def resolve(film_id,format_id):
                 key=digest(f'anwap:{film_id}:{format_id}:{cr[1]}:{revision}')
                 return {'stream_url':url,'file_key':'anwap:'+key,'title':fresh['raw']+' · '+file['path']}
     raise ValueError('Too many redirects')
+
+
+def source_path(ref):
+    return '/serials/down/'+str(-ref) if ref<0 else '/films/'+str(ref)
+
+
+def source_page(ref):
+    if ref<0:
+        from anwap_series import episode_formats
+        return episode_formats(html_page(source_path(ref)),-ref)
+    return parse_movie(html_page(source_path(ref)),ref)

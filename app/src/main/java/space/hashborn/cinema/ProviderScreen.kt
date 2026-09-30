@@ -39,61 +39,72 @@ internal fun ProviderScreen(state:ProviderState,request:suspend(String)->JSONObj
                             onBack:()->Unit,onOpen:(JSONObject)->Unit) {
     var busy by remember {mutableStateOf(false)}
     var error by remember {mutableStateOf("")}
-    val scope=rememberCoroutineScope()
     LaunchedEffect(state.source,state.query,state.offset,state.attempt) {
         val key="${state.source}:${state.query}:${state.offset}:${state.attempt}"
-        if(state.loadedKey==key) {
-            delay(150);runCatching{state.focus[state.selected]?.requestFocus()}
-            return@LaunchedEffect
-        }
-        busy=true;error="";state.data=null;state.selected="";state.scroll.scrollToItem(0)
+        val restored=state.loadedKey==key
+        if(!restored) {state.data=null;state.selected="";state.scroll.scrollToItem(0)}
+        else {delay(120);runCatching {state.focus[state.selected]?.requestFocus()}}
+        busy=!restored;error=""
+        val path="/api/v1/providers/"+state.source
+        val getPath=path+"?q="+URLEncoder.encode(state.query,"UTF-8")+"&offset="+state.offset
         try {
-            val path="/api/v1/providers/"+state.source
-            var result=post(path,JSONObject().put("q",state.query).put("offset",state.offset))
-            withTimeout(210000) {
-                while(result.optString("status")=="loading") {
-                    delay(1500)
-                    result=request(path+"?q="+URLEncoder.encode(state.query,"UTF-8")+"&offset="+state.offset)
+            var result=withTimeout(30000) {
+                while(true) {
+                    try {return@withTimeout post(path,JSONObject().put("q",state.query).put("offset",state.offset))}
+                    catch(e:CancellationException) {throw e}
+                    catch(e:Exception) {delay(3000)}
                 }
+                @Suppress("UNREACHABLE_CODE") JSONObject()
             }
-            check(result.optString("status")=="ready") {"Источник временно недоступен"}
-            state.data=result;state.loadedKey=key
-        } catch(e:TimeoutCancellationException) {error="Источник отвечает долго. Нажми «Повторить»."}
+            withTimeout(210000) {
+                while(result.optString("status")=="loading") {delay(1500);result=request(getPath)}
+            }
+            check(result.optString("status")=="ready")
+            state.data=result;state.loadedKey=key;busy=false
+            // Refresh cached metadata/posters without resetting focus or jumping back to the top.
+            while(isActive) {delay(15000);val fresh=request(getPath);if(fresh.optString("status")=="ready") state.data=fresh}
+        } catch(e:TimeoutCancellationException) {error="Источник отвечает долго. Сохранённые карточки остаются доступны."}
         catch(e:CancellationException) {throw e}
-        catch(e:Exception) {error="Не удалось загрузить источник. Повтори запрос через несколько секунд."}
+        catch(e:Exception) {error="Источник временно недоступен"}
         finally {busy=false}
     }
-    LazyColumn(Modifier.fillMaxSize().background(Color(0xFF101722)).padding(40.dp),state=state.scroll,verticalArrangement=Arrangement.spacedBy(18.dp)) {
-        item {Button(onClick=onBack) {Text("← На главную")}}
-        item {Text("Источники · "+providerName(state.source),color=Color.White,fontSize=28.sp)}
-        item {Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-            listOf("lostfilm","rutor","exkinoray","anwap").forEach {source -> Button(onClick={state.select(source)}) {Text((if(state.source==source) "✓ " else "")+providerName(source))}}
-        }}
+    LazyColumn(Modifier.fillMaxSize().background(Color(0xFF101722)).padding(horizontal=28.dp,vertical=16.dp),
+        state=state.scroll,verticalArrangement=Arrangement.spacedBy(10.dp)) {
         item {
-            Text("Поиск у поставщика, включая названия вне главной. Вводи русское или оригинальное название.",color=Color(0xFFA8B5C7))
-            Row(horizontalArrangement=Arrangement.spacedBy(16.dp)) {
-                BasicTextField(state.input,{state.input=it.take(120)},singleLine=true,textStyle=TextStyle(color=Color.White,fontSize=20.sp),
-                    modifier=Modifier.width(430.dp).background(Color(0xFF29374B)).padding(14.dp),
-                    decorationBox={inner -> if(state.input.isEmpty()) Text("Название…",color=Color.Gray);inner()})
-                Button(onClick={state.query=state.input.trim();state.offset=0;state.pages.clear();state.attempt++},enabled=!busy) {Text("Найти")}
-                Button(onClick={state.input="";state.query="";state.offset=0;state.pages.clear();state.attempt++},enabled=!busy) {Text("Каталог")}
+            Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                CompactButton("←",onBack)
+                listOf("lostfilm","rutor","exkinoray","anwap").forEach {source ->
+                    CompactButton((if(state.source==source) "✓ " else "")+providerName(source),{state.select(source)})
+                }
             }
         }
-        if(busy) item {Text("Загружаем поставщика… Запрос может занять несколько минут.",color=Color(0xFF5EEAD4))}
-        if(error.isNotEmpty()) item {Text(error,color=Color(0xFFFBBF24));Button(onClick={state.attempt++}) {Text("Повторить")}}
+        item {
+            Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+                BasicTextField(state.input,{state.input=it.take(120)},singleLine=true,textStyle=TextStyle(color=Color.White,fontSize=18.sp),
+                    modifier=Modifier.weight(1f).height(36.dp).background(Color(0xFF29374B)).padding(horizontal=12.dp,vertical=7.dp),
+                    decorationBox={inner -> if(state.input.isEmpty()) Text("Русское или оригинальное название…",color=Color.Gray,fontSize=16.sp);inner()})
+                CompactButton("Найти",{state.query=state.input.trim();state.offset=0;state.pages.clear();state.attempt++},enabled=!busy)
+                CompactButton("Все",{state.input="";state.query="";state.offset=0;state.pages.clear();state.attempt++},enabled=!busy)
+            }
+        }
+        if(busy) item {Text("Готовим каталог в фоне…",color=Color(0xFF5EEAD4),fontSize=13.sp)}
+        if(error.isNotEmpty()) item {Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+            Text(error,color=Color(0xFFFBBF24),fontSize=13.sp);CompactButton("Повторить",{state.attempt++})
+        }}
         val payload=state.data
         if(payload!=null) {
             val array=payload.optJSONArray("results")
             val cards=if(array==null) emptyList() else (0 until array.length()).map {array.getJSONObject(it)}
-            item {Text("На этой странице: ${cards.size}. "+(if(state.source=="lostfilm") "Каталог сериалов LostFilm." else "Видео, доступное через поставщика; это не полный архив сайта."),color=Color(0xFFA8B5C7))}
-            if(payload.optString("notice").isNotBlank()) item {Text(payload.optString("notice"),color=Color(0xFFFBBF24))}
+            if(payload.optString("notice").isNotBlank()) item {Text(payload.optString("notice"),color=Color(0xFFFBBF24),fontSize=13.sp)}
             if(cards.isEmpty()) item {Text("Ничего не найдено. Попробуй другое название.",color=Color.White)}
-            items(cards.chunked(4)) {chunk -> Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-                chunk.forEach {card -> val id=card.getString("id");CinemaCard(card,state.focus.getOrPut(id){FocusRequester()}) {state.selected=id;onOpen(card)}}
-            }}
+            items(cards.chunked(5),key={it.first().getString("id")}) {chunk ->
+                Row(horizontalArrangement=Arrangement.spacedBy(12.dp),modifier=Modifier.padding(vertical=3.dp)) {
+                    chunk.forEach {card -> val id=card.getString("id");CinemaCard(card,state.focus.getOrPut(id){FocusRequester()}) {state.selected=id;onOpen(card)}}
+                }
+            }
             item {Row(horizontalArrangement=Arrangement.spacedBy(16.dp)) {
-                if(state.pages.isNotEmpty()) Button(onClick={state.offset=state.pages.removeAt(state.pages.lastIndex)}) {Text("← Предыдущая страница")}
-                if(payload.optBoolean("has_more")) Button(onClick={state.pages.add(state.offset);state.offset=payload.getInt("next_offset")}) {Text("Следующая страница →")}
+                if(state.pages.isNotEmpty()) CompactButton("← Предыдущая",{state.offset=state.pages.removeAt(state.pages.lastIndex)})
+                if(payload.optBoolean("has_more")) CompactButton("Следующая →",{state.pages.add(state.offset);state.offset=payload.getInt("next_offset")})
             }}
         }
     }

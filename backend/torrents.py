@@ -124,8 +124,8 @@ class Torrents:
         try:
             release=self.release(rid)
             if release['source']=='anwap':
-                from anwap import parse_movie,html_page
-                fresh=parse_movie(html_page('/films/'+str(release['film_id'])),release['film_id'])
+                from anwap import source_page
+                fresh=source_page(release['film_id'])
                 files=[{k:f[k] for k in ('id','path','size','sample')} for f in fresh['formats']]
                 with self.catalog.db() as db:
                     db.execute("UPDATE prepared_releases SET status='ready',files=?,updated_at=?,error=NULL WHERE release_id=?",(json.dumps(files),time.time(),rid))
