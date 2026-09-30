@@ -5,5 +5,11 @@ local.properties
 dist/
 data/
 *.env
+.env*
+*.pem
+*.key
+device-token
+jackett-key
+*.sqlite*
 *.keystore
 __pycache__/

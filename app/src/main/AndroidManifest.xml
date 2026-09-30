@@ -3,7 +3,7 @@
     <uses-feature android:name="android.software.leanback" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <queries><package android:name="com.brouken.player" /></queries>
-    <application android:label="Медиатека · Проверка" android:allowBackup="false"
+    <application android:label="Домашняя медиатека" android:allowBackup="false"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:networkSecurityConfig="@xml/network_security_config"
         android:banner="@drawable/tv_banner" android:icon="@drawable/tv_banner"

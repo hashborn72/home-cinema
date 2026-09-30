@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -31,6 +32,7 @@ class MainActivity : ComponentActivity() {
     private var progress by mutableStateOf<Long?>(null)
     private var lastResult by mutableStateOf("Результатов ещё нет. Запуск видео не означает просмотр.")
     private var mediaUrl = ""
+    private var showProbe by mutableStateOf(false)
     private val launcher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val session = prefs.getString("active_session", null)
         val data = result.data
@@ -62,6 +64,10 @@ class MainActivity : ComponentActivity() {
         }
         lastResult = prefs.getString("last_result", lastResult) ?: lastResult
         setContent {
+            if (!showProbe) {
+                CatalogScreen(request = { path -> request(path) }, onProbe = { showProbe = true })
+            } else {
+            BackHandler { showProbe = false }
             MaterialTheme {
                 LazyColumn(modifier = Modifier.fillMaxSize().background(Color(0xFF101722)).padding(horizontal = 48.dp, vertical = 30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
                     item { Text("ДОМАШНЯЯ МЕДИАТЕКА", color = Color(0xFF5EEAD4), fontSize = 14.sp) }
@@ -80,6 +86,7 @@ class MainActivity : ComponentActivity() {
                     item { Text(lastResult, color = Color(0xFFCBD5E1)) }
                     item { Text("Тестовый ролик: Big Buck Bunny · Blender Foundation (CC BY 3.0).\nBack проверяет возврат позиции. Home не считается завершением просмотра.\nJackett, TorrServer и рабочая медиатека не изменяются.", color = Color(0xFF9CA3AF), fontSize = 14.sp) }
                 }
+            }
             }
         }
         refresh()

@@ -8,7 +8,8 @@ import secrets
 import sqlite3
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, asynccontextmanager
+from catalog import Catalog
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
@@ -70,7 +71,14 @@ def create_app(data_dir: Path, test_token: str | None = None):
           PRAGMA user_version=1;
         ''')
     os.chmod(db_path, 0o600)
-    app = FastAPI(title='Home Cinema development backend', docs_url=None, redoc_url=None, openapi_url=None)
+    catalog = Catalog(data_dir)
+    @asynccontextmanager
+    async def lifespan(app):
+        if test_token is None: catalog.start()
+        try: yield
+        finally: catalog.stop()
+    app = FastAPI(title='Home Cinema development backend', docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    app.state.catalog = catalog
 
     def auth(authorization: str = Header(default='')):
         if not hmac.compare_digest(authorization.encode(), ('Bearer ' + token).encode()):
@@ -78,7 +86,22 @@ def create_app(data_dir: Path, test_token: str | None = None):
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'version': '0.1.0-probe', 'environment': 'development'}
+        return {'status': 'ok', 'version': '0.2.0-catalog', 'environment': 'development'}
+
+    @app.get('/api/v1/catalog/home', dependencies=[Depends(auth)])
+    def catalog_home(): return catalog.home()
+
+    @app.get('/api/v1/catalog/search', dependencies=[Depends(auth)])
+    def catalog_search(q: str = '', kind: str | None = None):
+        if len(q) > 200 or kind not in (None, 'movie', 'tv'):
+            raise HTTPException(422, 'Invalid filter')
+        return catalog.search(q, kind)
+
+    @app.get('/api/v1/catalog/items/{content_id}', dependencies=[Depends(auth)])
+    def catalog_detail(content_id: str):
+        item = catalog.detail(content_id)
+        if item is None: raise HTTPException(404, 'Content not found')
+        return item
 
     @app.get('/probe-media', include_in_schema=False)
     def probe_media():
