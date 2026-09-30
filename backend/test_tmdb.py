@@ -79,6 +79,15 @@ class TMDBTests(unittest.TestCase):
         r=client.get('/api/v1/metadata/status',headers={'Authorization':'Bearer device'})
         self.assertTrue(r.json()['tmdb_configured']);self.assertNotIn('PRIVATE',r.text)
 
+    def test_search_accepts_localized_title_without_changing_identity(self):
+        cat=Catalog(self.root);cat.ingest('lostfilm',[release('tv','Lanterns - S01E01 - Pilot',source='lostfilm',cats=[5000])])
+        Metadata(cat)
+        cid=cat.search('Lanterns')['results'][0]['id']
+        with cat.db() as db:db.execute('INSERT INTO metadata_cache VALUES (?,?,?)',(cid,json.dumps({'provider':'TMDB','title':'Фонари'}),1))
+        self.assertEqual(cat.search('Фонари')['results'][0]['id'],cid)
+        self.assertEqual(cat.search('Lanterns')['results'][0]['id'],cid)
+        self.assertEqual(cat.search('Фонари',kind='movie')['results'],[])
+
     def test_poster_falls_back_to_native_and_cools_down(self):
         cat=Catalog(self.root)
         native={'provider':'Anwap','poster':'https://mm.anwap.media/films/screen/123.jpg'}

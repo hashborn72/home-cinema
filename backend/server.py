@@ -115,7 +115,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'version': '0.5.0-tmdb', 'environment': 'development'}
+        return {'status': 'ok', 'version': '0.5.1-usability', 'environment': 'development'}
 
     @app.get('/api/v1/metadata/status', dependencies=[Depends(auth)])
     def metadata_status():return metadata.status()

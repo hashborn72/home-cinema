@@ -75,7 +75,7 @@ class MainActivity : ComponentActivity() {
                 LazyColumn(modifier = Modifier.fillMaxSize().background(Color(0xFF101722)).padding(horizontal = 48.dp, vertical = 30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
                     item { Text("ДОМАШНЯЯ МЕДИАТЕКА", color = Color(0xFF5EEAD4), fontSize = 14.sp) }
                     item { Text("Проверка Just Player", color = Color.White, fontSize = 30.sp) }
-                    item { Text("Этап 1 · Android TV · 0.1.0-probe", color = Color(0xFF9CA3AF)) }
+                    item { Text("Диагностика внешнего плеера · Android TV", color = Color(0xFF9CA3AF)) }
                     item { Text(status, color = Color.White) }
                     item { Text("Сохранено на сервере: ${progress?.let(::formatTime) ?: "позиция неизвестна"}", color = Color.White, fontSize = 20.sp) }
                     item {

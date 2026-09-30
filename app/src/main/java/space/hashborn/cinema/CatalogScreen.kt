@@ -69,6 +69,7 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
     // Keep actual row scroll positions while the details page is open.
     val rowStates = remember {mutableMapOf<String,androidx.compose.foundation.lazy.LazyListState>()}
     val focusRequesters = remember { mutableMapOf<String,FocusRequester>() }
+    val menuFocusRequesters = remember { mutableMapOf<String,FocusRequester>() }
 
     suspend fun refresh() {
         val requestedSection = section
@@ -99,11 +100,20 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
     LaunchedEffect(detail,restoreFocus) {
         if (detail == null && restoreFocus) {
             delay(100)
-            runCatching { focusRequesters[selectedRow+":"+selectedId]?.requestFocus() }
+            val payload=data?.second
+            val candidates=if(section=="Главная" || section=="Моё") payload?.optJSONArray("shelves")?.objects()?.find {it.optString("id")==selectedRow}?.optJSONArray("results") else payload?.optJSONArray("results")
+            val stillVisible=candidates?.objects()?.any {it.optString("id")==selectedId}==true
+            val target=if(stillVisible) focusRequesters[selectedRow+":"+selectedId] else null
+            val restored=target!=null && runCatching {target.requestFocus()}.isSuccess
+            if(!restored) {
+                columnState.scrollToItem(0)
+                delay(100)
+                runCatching {menuFocusRequesters[section]?.requestFocus()}
+            }
             restoreFocus = false
         }
     }
-    fun back() { detail = null; restoreFocus = true; if(section=="Моё") scope.launch {refresh()} }
+    fun back() { detail = null; scope.launch {if(section=="Моё") refresh(); restoreFocus = true} }
     LaunchedEffect(release,prepareAttempt) {
         val current = release ?: return@LaunchedEffect
         val rid = current.getString("id")
@@ -191,10 +201,10 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                     Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
                         Text(file.getString("path"),color=Color.White,fontSize=18.sp)
                         Text((if(file.optBoolean("sample")) "Образец · " else "") +
-                            (if(file.optBoolean("completed")) "Плеер сообщил о завершении" else if(!file.isNull("position_ms")) "Сохранено: ${file.optLong("position_ms")/60000} мин" else "Позиция ещё не сохранена"),color=Muted)
+                            (if(file.optBoolean("completed")) "Плеер сообщил о завершении" else if(!file.isNull("position_ms")) "Сохранено: ${formatPlaybackPosition(file.optLong("position_ms"))}" else "Позиция ещё не сохранена"),color=Muted)
                         Row(horizontalArrangement=Arrangement.spacedBy(18.dp)) {
                             listOf(false to "С начала",true to "Продолжить").forEach { (resume,label) ->
-                                Button(enabled=!playerBusy && !preparing,onClick={scope.launch {
+                                Button(enabled=!playerBusy && !preparing && (!resume || (file.optLong("position_ms")>0 && !file.optBoolean("completed"))),onClick={scope.launch {
                                     try { onPlay(current.getString("id"),file.getInt("id"),resume); fileError="" }
                                     catch(e:Exception) {fileError=e.message ?: "Ошибка запуска"}
                                 }}) { Text(label) }
@@ -266,7 +276,7 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                 item {
                     Row(horizontalArrangement=Arrangement.spacedBy(14.dp)) {
                         listOf("Главная","Фильмы","Сериалы","Поиск","Моё").forEach { name ->
-                            Button(onClick={section=name}) { Text(if(section==name) "• $name" else name) }
+                            Button(modifier=Modifier.focusRequester(menuFocusRequesters.getOrPut(name){FocusRequester()}),onClick={section=name}) { Text(if(section==name) "• $name" else name) }
                         }
                     }
                 }
@@ -340,7 +350,7 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                     }
                 }
                 item {
-                    Text("О приложении · 0.5 · Личная медиатека",color=Muted,fontSize=16.sp)
+                    Text("О приложении · 0.5.1 · Личная медиатека",color=Muted,fontSize=16.sp)
                     Image(painterResource(R.drawable.tmdb_logo),contentDescription="TMDB",modifier=Modifier.width(137.dp).height(32.dp))
                     Text("This product uses the TMDB API but is not endorsed or certified by TMDB.",color=Muted,fontSize=13.sp)
                     Text("TMDB — описания и изображения. Anwap и TVmaze указаны в карточках. Воспроизведение — Just Player.",color=Muted,fontSize=13.sp)
@@ -361,7 +371,7 @@ private fun CinemaCard(card:JSONObject,requester:FocusRequester,onClick:()->Unit
             Text(cardSubtitle(card),fontSize=13.sp)
             Text(displayTitle(card),fontSize=20.sp,maxLines=3,overflow=TextOverflow.Ellipsis,modifier=Modifier.weight(1f))
             Text("Раздач: "+card.optInt("release_count")+" · сиды: "+card.optional("seeders").ifEmpty{"?"},fontSize=12.sp)
-            card.optJSONObject("resume_target")?.let { target -> Text("Позиция: ${target.optLong("position_ms")/60000} мин",fontSize=12.sp) }
+            card.optJSONObject("resume_target")?.let { target -> Text("Позиция: ${formatPlaybackPosition(target.optLong("position_ms"))}",fontSize=12.sp) }
         }
     }
 }

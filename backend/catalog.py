@@ -234,7 +234,12 @@ class Catalog:
         _,releases = self.snapshot()
         cards = self.cards(releases)
         terms = normal(query).split()
-        cards = [c for c in cards if (not kind or c['media_type']==kind) and all(t in normal(' '.join([c['title']]+c['aliases'])) for t in terms)]
+        metadata_titles={}
+        if terms:
+            with self.db() as db:
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata_cache'").fetchone():
+                    metadata_titles={r['content_id']:json.loads(r['payload']).get('title') or '' for r in db.execute('SELECT content_id,payload FROM metadata_cache WHERE payload IS NOT NULL')}
+        cards = [c for c in cards if (not kind or c['media_type']==kind) and all(t in normal(' '.join([c['title']]+c['aliases']+[metadata_titles.get(c['id'],''),(c.get('metadata') or {}).get('title') or ''])) for t in terms)]
         cards.sort(key=lambda c:c['published_at'],reverse=True)
         return {'results':cards[:200], 'total':len(cards)}
 
