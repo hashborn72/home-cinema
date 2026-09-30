@@ -101,7 +101,7 @@ class MainActivity : ComponentActivity() {
         if (token.isEmpty()) throw IllegalStateException("Устройство ещё не подключено к backend")
         val conn = URL(base + path).openConnection() as HttpURLConnection
         try {
-            conn.connectTimeout = 6000; conn.readTimeout = 6000
+            conn.connectTimeout = 6000; conn.readTimeout = if(path=="/api/v1/playback/file-sessions") 55000 else 6000
             conn.setRequestProperty("Authorization", "Bearer $token")
             if (body != null) {
                 conn.requestMethod = "POST"; conn.doOutput = true

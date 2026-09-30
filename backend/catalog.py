@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-SOURCES = {'lostfilm': 'LostFilm — новые сериалы', 'exkinoray': 'ExKinoRay — новые раздачи фильмов', 'rutor': 'RuTor — популярное'}
+SOURCES = {'lostfilm': 'LostFilm — новые сериалы', 'exkinoray': 'ExKinoRay — новые раздачи фильмов', 'rutor': 'RuTor — популярное','anwap':'Anwap — новые фильмы'}
 TTL = 600
 EPISODE = re.compile(r'(?i)\bS(\d{1,2})(?:E(\d{1,3}))?|\b(\d{1,2})x(\d{1,3})\b|(?:сезон[ыа]?|сери[яий])\s*\d')
 TECH = re.compile(r'(?i)(?<!\w)(?:\d{3,4}[pi]|BDRip|BDRemux|Blu[ -]?Ray|REMUX|WEB[ .-]?(?:DL(?:Rip)?|Rip)|WEBDL|HDRip|HDTV|DVDRip|DVD|UHD|HDR10?\+?|HEVC|AVC|x26[45]|H[ .]?26[45]|DUB|MVO|DVO|VO|AAC|DTS|FLAC|rus|eng|\d+(?:[.,]\d+)?\s*(?:GB|MB|ГБ|МБ))(?!\w)')
@@ -136,25 +136,35 @@ class Catalog:
                 db.execute('INSERT OR REPLACE INTO catalog_categories VALUES (?,?,?)',(url,kind,time.time()))
         return kind
 
-    def ingest(self, source, rows):
+    def ingest(self, source, rows, update_shelf=True):
         accepted = []
         for row in rows:
             cats = row['categories']
             kind = row.get('kind') if source == 'rutor' else ('movie' if any(2000 <= c < 3000 for c in cats) else 'tv' if any(5000 <= c < 6000 for c in cats) else None)
             if kind not in ('movie','tv') or (source == 'lostfilm' and kind != 'tv'): continue
             item = dict(row, **{'content':identify(row['raw'],source,kind,row['id'])})
+            if row.get('metadata'):item['content']['metadata']=row['metadata']
             accepted.append(item)
         now = time.time()
         with self.db() as db:
             # Persist existing catalogue records for history/deep links; shelf membership is a snapshot.
             for row in accepted:
                 row['seen_at'] = now
+                if not update_shelf:
+                    old=db.execute('SELECT payload FROM catalog_releases WHERE id=?',(row['id'],)).fetchone()
+                    prior=json.loads(old['payload']) if old else {}
+                    row['seen_at']=prior.get('seen_at',0)
+                    if 'source_rank' in prior:row['source_rank']=prior['source_rank']
                 db.execute('INSERT OR REPLACE INTO catalog_releases VALUES (?,?,?,?)',
                            (row['id'],source,row['content']['id'],json.dumps(row,ensure_ascii=False)))
-            db.execute('INSERT OR REPLACE INTO catalog_sources VALUES (?,?,?,?,?)',(source,now,now,None,len(rows)))
+            if update_shelf:db.execute('INSERT OR REPLACE INTO catalog_sources VALUES (?,?,?,?,?)',(source,now,now,None,len(rows)))
 
     def refresh(self, source):
         try:
+            if source=='anwap':
+                from anwap import latest
+                self.ingest(source,latest())
+                return
             key = (self.data_dir/'jackett-key').read_text().strip()
             params = {'apikey':key,'t':'search','limit':100}
             # ExKinoRay includes genuine video mapped to TV; do not silently discard it.
@@ -198,8 +208,10 @@ class Catalog:
             content = release['content']
             card = groups.setdefault(content['id'],dict(content,release_count=0,seeders=None,published_at=0,sources=[]))
             card['release_count'] += 1
+            if content.get('metadata'):card['metadata']=content['metadata']
             if release['seeders'] is not None: card['seeders'] = max(card['seeders'] or 0,release['seeders'])
             card['published_at'] = max(card['published_at'],release['published_at'])
+            if release.get('source_rank') is not None:card['source_rank']=max(card.get('source_rank',0),release['source_rank'])
             if release['source'] not in card['sources']: card['sources'].append(release['source'])
         return list(groups.values())
 
@@ -211,7 +223,7 @@ class Catalog:
             fetched = state.get('fetched_at',0)
             selected = [r for r in releases if r['source']==source and r.get('seen_at')==fetched]
             cards = self.cards(selected)
-            cards.sort(key=lambda r: (r['seeders'] or 0,r['published_at']) if source=='rutor' else ((r['media_type']=='movie') if source=='exkinoray' else True,r['published_at']),reverse=True)
+            cards.sort(key=lambda r: (r['seeders'] or 0,r['published_at']) if source=='rutor' else (True,r.get('source_rank',0)) if source=='anwap' else ((r['media_type']=='movie') if source=='exkinoray' else True,r['published_at']),reverse=True)
             shelves.append({'id':source,'title':title,'results':cards[:40], 'fetched_at':fetched,
                             'stale':bool(fetched and (time.time()-fetched>=TTL or state.get('error'))),
                             'warming':not bool(state),'error':state.get('error'),'received':state.get('received',0),
@@ -231,5 +243,5 @@ class Catalog:
             releases = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM catalog_releases WHERE content_id=?',(content_id,))]
         if not releases: return None
         card = self.cards(releases)[0]
-        card['releases'] = [dict(id=r['id'],source=r['source'],title=r['raw'],seeders=r['seeders'],size=r['size'],published_at=r['published_at'],quality=r['content']['quality'],season=r['content']['season'],episode=r['content']['episode']) for r in sorted(releases,key=lambda r:(r['published_at'],r['seeders'] or 0),reverse=True)]
+        card['releases'] = [dict(id=r['id'],source=r['source'],title=r['raw'],kind='direct' if r['source']=='anwap' else 'torrent',seeders=r['seeders'],size=r['size'],published_at=r['published_at'],quality=r['content']['quality'],season=r['content']['season'],episode=r['content']['episode']) for r in sorted(releases,key=lambda r:(r['published_at'],r['seeders'] or 0),reverse=True)]
         return card

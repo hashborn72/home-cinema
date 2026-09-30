@@ -12,8 +12,11 @@ from contextlib import contextmanager, asynccontextmanager
 from catalog import Catalog
 from torrents import Torrents
 from metadata import Metadata
+from library import Library
+from anwap import Search
+from streaming import Streams
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
@@ -39,6 +42,16 @@ class FileStart(BaseModel):
     release_id: str = Field(min_length=1,max_length=100)
     file_id: StrictInt = Field(ge=1)
     resume: StrictBool = False
+
+class LibraryUpdate(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    favorite: StrictBool | None = None
+    watch_later: StrictBool | None = None
+    watched: StrictBool | None = None
+
+class SearchQuery(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    q: str = Field(min_length=2,max_length=120)
 
 def create_app(data_dir: Path, test_token: str | None = None):
     data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -82,6 +95,9 @@ def create_app(data_dir: Path, test_token: str | None = None):
     catalog = Catalog(data_dir)
     torrents = Torrents(catalog)
     metadata = Metadata(catalog)
+    library = Library(catalog)
+    anwap_search = Search(catalog)
+    streams = Streams(catalog)
     @asynccontextmanager
     async def lifespan(app):
         if test_token is None: catalog.start(); metadata.start()
@@ -99,12 +115,48 @@ def create_app(data_dir: Path, test_token: str | None = None):
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'version': '0.3.0-playback', 'environment': 'development'}
+        return {'status': 'ok', 'version': '0.4.0-library', 'environment': 'development'}
 
-    def selection(release_id, file_id):
-        try: return torrents.selection(release_id,file_id)
+    @app.get('/play/{ticket}')
+    async def play_stream(ticket: str,request:Request):return await streams.stream(ticket,request)
+
+    @app.get('/images/{content_id}')
+    def image(content_id: str):
+        # Fixed catalog images only, not an arbitrary URL or filesystem proxy.
+        try:path=metadata.poster(content_id)
+        except KeyError:raise HTTPException(404,'No poster')
+        except Exception:raise HTTPException(502,'Poster unavailable')
+        with path.open('rb') as f:png=f.read(8)==b'\x89PNG\r\n\x1a\n'
+        return FileResponse(path,media_type='image/png' if png else 'image/jpeg',headers={'Cache-Control':'public, max-age=86400'})
+
+    @app.get('/api/v1/library', dependencies=[Depends(auth)])
+    def get_library():
+        response=library.shelves()
+        for shelf in response['shelves']: metadata.enrich(shelf['results'])
+        return response
+
+    @app.post('/api/v1/catalog/anwap-search', dependencies=[Depends(auth)])
+    def start_anwap_search(body: SearchQuery):
+        try:return anwap_search.start(body.q)
+        except ValueError:raise HTTPException(422,'Query length')
+        except RuntimeError:raise HTTPException(429,'Search already running')
+
+    @app.get('/api/v1/catalog/anwap-search', dependencies=[Depends(auth)])
+    def anwap_search_state(q: str=''):
+        if len(q)>120:raise HTTPException(422,'Query length')
+        return anwap_search.state(q)
+
+    @app.post('/api/v1/library/{content_id}', dependencies=[Depends(auth)])
+    def update_library(content_id: str, body: LibraryUpdate):
+        try: return library.update(content_id,body.model_dump(exclude_unset=True))
+        except KeyError: raise HTTPException(404,'Content not found')
+        except ValueError: raise HTTPException(422,'Specify boolean library flags')
+
+    def selection(release_id, file_id, resolve_stream=True):
+        try: return torrents.selection(release_id,file_id,resolve_stream)
         except KeyError: raise HTTPException(404,'Release not found')
         except ValueError: raise HTTPException(409,'Prepare the release and select a video file')
+        except Exception: raise HTTPException(502,'Video source unavailable')
 
     @app.post('/api/v1/releases/{release_id}/prepare', dependencies=[Depends(auth)])
     def prepare_release(release_id: str):
@@ -119,8 +171,12 @@ def create_app(data_dir: Path, test_token: str | None = None):
         if state['status']=='ready':
             with db() as conn:
                 for file in state['files']:
-                    item=selection(release_id,file['id'])
+                    item=selection(release_id,file['id'],False)
                     row=conn.execute('SELECT position_ms,completed FROM progress WHERE profile_id=? AND content_id=? AND file_key=?',('main',item['content_id'],item['file_key'])).fetchone()
+                    if item['file_key']=='anwap:pending':
+                        row=conn.execute('''SELECT p.position_ms,p.completed FROM progress p
+                          JOIN playback_sessions s ON s.seq=p.last_session_seq JOIN playback_targets t ON t.session_id=s.id
+                          WHERE p.profile_id='main' AND t.release_id=? AND t.file_id=? ORDER BY p.updated_at DESC LIMIT 1''',(release_id,file['id'])).fetchone()
                     file['position_ms']=row['position_ms'] if row else None
                     file['completed']=bool(row['completed']) if row else False
         return state
@@ -128,6 +184,8 @@ def create_app(data_dir: Path, test_token: str | None = None):
     @app.post('/api/v1/playback/file-sessions', dependencies=[Depends(auth)])
     def start_file(body: FileStart):
         item=selection(body.release_id,body.file_id)
+        source=torrents.release(body.release_id)
+        if source['source']=='anwap':item['stream_url']=streams.ticket(source['film_id'],body.file_id,item)
         session_id=str(uuid.uuid4())
         with db() as conn:
             conn.execute('BEGIN IMMEDIATE')
@@ -135,6 +193,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
             position=(row['position_ms'] or 0) if body.resume and row and not row['completed'] else 0
             conn.execute('INSERT INTO playback_sessions(id,content_id,file_key,started_at,start_position_ms) VALUES (?,?,?,?,?)',
                          (session_id,item['content_id'],item['file_key'],time.time(),position))
+            conn.execute('INSERT INTO playback_targets VALUES (?,?,?,?)',(session_id,body.release_id,body.file_id,item['title']))
         return dict(item,id=session_id,start_position_ms=position)
 
     @app.get('/api/v1/catalog/home', dependencies=[Depends(auth)])
@@ -156,6 +215,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
         item = catalog.detail(content_id)
         if item is None: raise HTTPException(404, 'Content not found')
         metadata.enrich([item])
+        item['library']=library.flags(content_id)
         return item
 
     @app.get('/probe-media', include_in_schema=False)

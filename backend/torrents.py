@@ -114,6 +114,13 @@ class Torrents:
     def _prepare(self, rid):
         try:
             release=self.release(rid)
+            if release['source']=='anwap':
+                from anwap import parse_movie,html_page
+                fresh=parse_movie(html_page('/films/'+str(release['film_id'])),release['film_id'])
+                files=[{k:f[k] for k in ('id','path','size','sample')} for f in fresh['formats']]
+                with self.catalog.db() as db:
+                    db.execute("UPDATE prepared_releases SET status='ready',files=?,updated_at=?,error=NULL WHERE release_id=?",(json.dumps(files),time.time(),rid))
+                return
             status=self.add(release)
             # Magnets may not have metadata yet. Bound polling and offer an explicit retry.
             deadline=time.monotonic()+70
@@ -135,13 +142,19 @@ class Torrents:
         finally:
             with self.lock: self.pending.discard(rid)
 
-    def selection(self, rid, file_id):
+    def selection(self, rid, file_id, resolve_stream=True):
         release=self.release(rid)
         with self.catalog.db() as db:
             r=db.execute("SELECT * FROM prepared_releases WHERE release_id=? AND status='ready'",(rid,)).fetchone()
         if not r: raise ValueError('Release not ready')
         file=next((f for f in json.loads(r['files']) if f['id']==file_id),None)
         if not file: raise ValueError('File not found')
+        if release['source']=='anwap':
+            if not resolve_stream:
+                return {'content_id':release['content']['id'],'file_key':'anwap:pending'}
+            from anwap import resolve
+            item=resolve(release['film_id'],file_id)
+            return dict(item,content_id=release['content']['id'])
         file_key=r['hash']+':'+str(file_id)
         return {'content_id':release['content']['id'],'file_key':file_key,'title':file['path'],
                 'stream_url':TORR+'/stream/'+quote(file['path'].rsplit('/',1)[-1],safe='')+'?'+urlencode({'link':r['hash'],'index':file_id,'play':''})}

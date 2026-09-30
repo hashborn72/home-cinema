@@ -4,8 +4,12 @@ import json
 import re
 import threading
 import time
+import os
+import hashlib
+from pathlib import Path
 from urllib.parse import urlencode, urlparse
 from catalog import normal, fetch
+import httpx
 
 
 def match_show(card, results):
@@ -33,8 +37,42 @@ class Metadata:
     def enrich(self,cards):
         with self.catalog.db() as db:
             cache={r['content_id']:json.loads(r['payload']) for r in db.execute('SELECT * FROM metadata_cache WHERE payload IS NOT NULL')}
-        for card in cards: card['metadata']=cache.get(card['id'])
+        for card in cards:
+            card['metadata']=card.get('metadata') or cache.get(card['id'])
+            if card['metadata'] and card['metadata'].get('poster'):
+                card['metadata']=dict(card['metadata'],poster=os.environ.get('CINEMA_PUBLIC_URL','http://192.168.0.221:18093')+'/images/'+card['id'])
         return cards
+
+    def poster(self,cid):
+        card=self.catalog.detail(cid)
+        if not card:raise KeyError(cid)
+        meta=card.get('metadata')
+        if not meta:
+            with self.catalog.db() as db:
+                row=db.execute('SELECT payload FROM metadata_cache WHERE content_id=?',(cid,)).fetchone()
+            meta=json.loads(row['payload']) if row and row['payload'] else None
+        url=(meta or {}).get('poster','');p=urlparse(url)
+        if p.scheme!='https' or p.netloc not in ('mm.anwap.media','static.tvmaze.com') or p.query or p.fragment:raise KeyError(cid)
+        if p.netloc=='mm.anwap.media' and not re.fullmatch(r'/films/screen/\d+\.jpg',p.path):raise KeyError(cid)
+        folder=self.catalog.data_dir/'posters';folder.mkdir(mode=0o700,exist_ok=True)
+        path=folder/hashlib.sha256(url.encode()).hexdigest()
+        if path.is_file():return path
+        with httpx.Client(timeout=10,follow_redirects=False,trust_env=False,headers={'User-Agent':'Mozilla/5.0 (compatible; HomeCinema/0.4)'}) as client:
+            with client.stream('GET',url) as r:
+                r.raise_for_status();body=bytearray()
+                for chunk in r.iter_bytes():
+                    body.extend(chunk)
+                    if len(body)>3_000_000:raise ValueError('Poster too large')
+        if not (body.startswith(b'\xff\xd8\xff') or body.startswith(b'\x89PNG\r\n\x1a\n')):raise ValueError('Not an image')
+        # Atomic replace: concurrent reads cannot observe a partial image.
+        import tempfile
+        fd,tmp=tempfile.mkstemp(dir=folder,prefix='poster-')
+        try:
+            with os.fdopen(fd,'wb') as out:out.write(body)
+            os.replace(tmp,path)
+        finally:
+            if os.path.exists(tmp):os.unlink(tmp)
+        return path
 
     def refresh(self,card):
         results=[]
