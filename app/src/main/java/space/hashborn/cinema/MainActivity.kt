@@ -33,6 +33,7 @@ class MainActivity : ComponentActivity() {
     private var lastResult by mutableStateOf("Результатов ещё нет. Запуск видео не означает просмотр.")
     private var mediaUrl = ""
     private var showProbe by mutableStateOf(false)
+    private var showConnection by mutableStateOf(false)
     private val launcher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val session = prefs.getString("active_session", null)
         val data = result.data
@@ -57,14 +58,20 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Provisioned only by the development harness; no server credential in the APK.
-        if (intent.hasExtra("backend_token")) {
+        if (BuildConfig.DEBUG && intent.hasExtra("backend_token")) {
             prefs.edit().putString("token", intent.getStringExtra("backend_token"))
                 .putString("backend", intent.getStringExtra("backend") ?: "http://192.168.0.221:18093").commit()
             intent.removeExtra("backend_token")
         }
         lastResult = prefs.getString("last_result", lastResult) ?: lastResult
+        showConnection = prefs.getString("token", "").isNullOrEmpty()
         setContent {
-            if (!showProbe) {
+            if (showConnection) {
+                val hasToken = !prefs.getString("token", "").isNullOrEmpty()
+                BackHandler(enabled=hasToken) { showConnection=false }
+                ConnectionScreen(prefs.getString("backend", "http://192.168.0.221:18093")!!,
+                    canCancel=hasToken,onCancel={showConnection=false},onConnect={base,code -> connectDevice(base,code)})
+            } else if (!showProbe) {
                 CatalogScreen(request = { path -> request(path) },
                     post = { path, body -> request(path,body) },
                     onPlay = { release, file, resume -> playFile(release,file,resume) },
@@ -86,13 +93,46 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     item { Button(onClick = { refresh() }, enabled = !busy) { Text("Обновить с сервера") } }
+                    item { Button(onClick = { showConnection=true }, enabled = !busy) { Text("Подключение к серверу") } }
                     item { Text(lastResult, color = Color(0xFFCBD5E1)) }
                     item { Text("Тестовый ролик: Big Buck Bunny · Blender Foundation (CC BY 3.0).\nBack проверяет возврат позиции. Home не считается завершением просмотра.\nJackett, TorrServer и рабочая медиатека не изменяются.", color = Color(0xFF9CA3AF), fontSize = 14.sp) }
                 }
             }
             }
         }
-        refresh()
+        if (!showConnection) refresh()
+    }
+
+    private suspend fun connectDevice(rawBase: String, code: String) {
+        if (prefs.contains("pending_result") || prefs.contains("active_session"))
+            throw IllegalStateException("Сначала вернитесь из плеера и сохраните результат через «Обновить с сервера».")
+        val base = rawBase.trim().trimEnd('/')
+        val uri = Uri.parse(base)
+        require(uri.scheme in listOf("http","https") && !uri.host.isNullOrBlank() &&
+                uri.userInfo == null && uri.query == null && uri.fragment == null && uri.path.isNullOrEmpty()) {
+            "Введите адрес сервера вида http://192.168.0.221:18093"
+        }
+        val credential = withContext(Dispatchers.IO) {
+            val conn=URL(base+"/api/v1/pair").openConnection() as HttpURLConnection
+            try {
+                conn.connectTimeout=6000;conn.readTimeout=6000;conn.instanceFollowRedirects=false
+                conn.requestMethod="POST";conn.doOutput=true
+                conn.setRequestProperty("Content-Type","application/json")
+                conn.outputStream.use { it.write(JSONObject().put("code",code).toString().toByteArray(Charsets.UTF_8)) }
+                when(conn.responseCode) {
+                    200 -> JSONObject(conn.inputStream.bufferedReader().use {it.readText()}).getString("token")
+                    400 -> throw IllegalStateException("Код неверный, уже использован или истёк.")
+                    429 -> throw IllegalStateException("Слишком много попыток. Подождите минуту.")
+                    else -> throw IllegalStateException("Сервер вернул HTTP ${conn.responseCode}")
+                }
+            } catch(e:java.io.IOException) {
+                throw IllegalStateException("Нет связи с сервером. Проверьте адрес и сеть телевизора.")
+            } finally { conn.disconnect() }
+        }
+        check(prefs.edit().putString("backend",base).putString("token",credential).commit()) {
+            "Не удалось сохранить подключение. Потребуется новый одноразовый код."
+        }
+        showProbe=false;showConnection=false;refresh()
     }
 
     private suspend fun request(path: String, body: JSONObject? = null): JSONObject = withContext(Dispatchers.IO) {

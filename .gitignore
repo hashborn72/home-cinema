@@ -14,4 +14,6 @@ jackett-key
 tmdb-token
 *.sqlite*
 *.keystore
+*.jks
+signing/
 __pycache__/

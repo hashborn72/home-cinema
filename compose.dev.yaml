@@ -1,7 +1,7 @@
 services:
   backend:
     build: ./backend
-    image: local/home-cinema-dev:0.5.1
+    image: local/home-cinema-dev:0.6.0
     dns: [1.1.1.1]
     container_name: home-cinema-dev
     restart: unless-stopped
@@ -9,6 +9,7 @@ services:
       - "192.168.0.221:18093:8080"
     volumes:
       - ./data:/data
+      - ./dist:/releases:ro
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]

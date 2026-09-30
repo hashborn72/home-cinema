@@ -15,9 +15,10 @@ from metadata import Metadata
 from library import Library
 from anwap import Search
 from streaming import Streams
+from pairing import Pairing
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 CONTENT_ID = 'probe:big-buck-bunny'
@@ -52,6 +53,10 @@ class LibraryUpdate(BaseModel):
 class SearchQuery(BaseModel):
     model_config = ConfigDict(extra='forbid')
     q: str = Field(min_length=2,max_length=120)
+
+class PairCode(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    code: str = Field(pattern=r'^[0-9]{12}$')
 
 def create_app(data_dir: Path, test_token: str | None = None):
     data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -92,6 +97,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
           PRAGMA user_version=1;
         ''')
     os.chmod(db_path, 0o600)
+    pairing = Pairing(db_path)
     catalog = Catalog(data_dir)
     torrents = Torrents(catalog)
     metadata = Metadata(catalog)
@@ -110,12 +116,39 @@ def create_app(data_dir: Path, test_token: str | None = None):
     app.state.torrents = torrents
 
     def auth(authorization: str = Header(default='')):
-        if not hmac.compare_digest(authorization.encode(), ('Bearer ' + token).encode()):
+        legacy = hmac.compare_digest(authorization.encode(), ('Bearer ' + token).encode())
+        device = authorization.removeprefix('Bearer ') if authorization.startswith('Bearer ') else ''
+        if not legacy and not pairing.authorized(device):
             raise HTTPException(401, 'Device authentication required')
+
+    @app.post('/api/v1/pair')
+    def pair_device(body: PairCode):
+        try: credential = pairing.redeem(body.code)
+        except ValueError: raise HTTPException(400, 'Invalid or expired code')
+        except RuntimeError: raise HTTPException(429, 'Try again in one minute')
+        return JSONResponse({'token': credential}, headers={'Cache-Control': 'no-store'})
+
+    @app.get('/install', response_class=HTMLResponse)
+    def install_page():
+        return '''<!doctype html><html lang="ru"><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>Домашняя медиатека</title><body style="font:22px sans-serif;padding:32px">
+        <h1>Домашняя медиатека 0.6.0</h1>
+        <p><a href="/downloads/home-cinema.apk">Скачать APK для Android TV</a></p>
+        <p>Установите APK, откройте приложение и введите одноразовый код подключения.</p>
+        <p>Сервер: http://192.168.0.221:18093<br>Для видео нужен Just Player.</p>
+        <p>Только домашняя сеть. Не открывайте этот сервер в интернет.</p></body></html>'''
+
+    @app.api_route('/downloads/home-cinema.apk', methods=['GET', 'HEAD'])
+    def download_apk():
+        path = Path('/releases/home-cinema.apk')
+        if not path.is_file(): raise HTTPException(404, 'Release not published')
+        return FileResponse(path, media_type='application/vnd.android.package-archive',
+                            filename='home-cinema-0.6.0.apk', headers={'Cache-Control': 'no-cache'})
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'version': '0.5.1-usability', 'environment': 'development'}
+        return {'status': 'ok', 'version': '0.6.0-tv', 'environment': 'development'}
 
     @app.get('/api/v1/metadata/status', dependencies=[Depends(auth)])
     def metadata_status():return metadata.status()
