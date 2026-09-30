@@ -26,12 +26,15 @@ import java.net.URLEncoder
 import coil.compose.AsyncImage
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalContext
 
 private val Ink = Color(0xFF101722)
 private val Muted = Color(0xFFA8B5C7)
 private fun JSONArray.objects() = (0 until length()).map { getJSONObject(it) }
 private fun JSONObject.optional(name: String) = if (isNull(name)) "" else optString(name)
+private fun displayTitle(card:JSONObject) = card.optJSONObject("metadata")?.optional("title")?.takeIf {it.isNotBlank()} ?: card.getString("title")
 private fun cardSubtitle(card: JSONObject): String {
     val kind = if (card.optString("media_type") == "tv") "Сериал / ТВ" else "Фильм"
     return listOf(kind,card.optional("year")).filter { it.isNotEmpty() }.joinToString(" · ")
@@ -209,7 +212,7 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
             val item = detail!!
             LazyColumn(Modifier.fillMaxSize().background(Ink).padding(40.dp), verticalArrangement=Arrangement.spacedBy(16.dp)) {
                 item { Button(onClick={back()}) { Text("← К каталогу") } }
-                item { Text(item.getString("title"),fontSize=32.sp,color=Color.White) }
+                item { Text(displayTitle(item),fontSize=32.sp,color=Color.White) }
                 item { Text(cardSubtitle(item)+" · "+item.optInt("release_count")+" раздач",color=Muted) }
                 item {
                     Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
@@ -235,7 +238,7 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                 val metadata=item.optJSONObject("metadata")
                 item {
                     Row(horizontalArrangement=Arrangement.spacedBy(24.dp)) {
-                        if(metadata?.optional("poster")?.isNotEmpty()==true) AsyncImage(model=metadata.getString("poster"),contentDescription=null,modifier=Modifier.width(145.dp).height(215.dp),contentScale=ContentScale.Crop)
+                        if(metadata?.optional("poster")?.isNotEmpty()==true) CinemaPoster(metadata.getString("poster"),Modifier.width(145.dp).height(215.dp))
                         Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                             Text(metadata?.optional("description")?.ifEmpty {null} ?: "Нет уверенного совпадения с базой описаний. Доступные раздачи можно открыть ниже.",color=Muted,fontSize=17.sp)
                             if(metadata!=null) {
@@ -336,7 +339,13 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                         }
                     }
                 }
-                item { Text("0.4 · Личный каталог · Без TMDB",color=Muted,fontSize=12.sp); Button(onClick=onProbe) {Text("Проверка плеера")} }
+                item {
+                    Text("О приложении · 0.5 · Личная медиатека",color=Muted,fontSize=16.sp)
+                    Image(painterResource(R.drawable.tmdb_logo),contentDescription="TMDB",modifier=Modifier.width(137.dp).height(32.dp))
+                    Text("This product uses the TMDB API but is not endorsed or certified by TMDB.",color=Muted,fontSize=13.sp)
+                    Text("TMDB — описания и изображения. Anwap и TVmaze указаны в карточках. Воспроизведение — Just Player.",color=Muted,fontSize=13.sp)
+                    Button(onClick=onProbe) {Text("Проверка плеера")}
+                }
             }
         }
     }
@@ -347,12 +356,22 @@ private fun CinemaCard(card:JSONObject,requester:FocusRequester,onClick:()->Unit
     Surface(onClick=onClick,modifier=Modifier.width(202.dp).height(310.dp).focusRequester(requester)) {
         Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
             val poster=card.optJSONObject("metadata")?.optional("poster")
-            if(!poster.isNullOrEmpty()) AsyncImage(model=poster,contentDescription=null,modifier=Modifier.fillMaxWidth().height(145.dp),contentScale=ContentScale.Crop)
+            if(!poster.isNullOrEmpty()) CinemaPoster(poster,Modifier.fillMaxWidth().height(145.dp))
             else Box(Modifier.fillMaxWidth().height(145.dp).background(Color(0xFF263244))) {Text("Без постера",modifier=Modifier.padding(16.dp),color=Muted,fontSize=14.sp)}
             Text(cardSubtitle(card),fontSize=13.sp)
-            Text(card.getString("title"),fontSize=20.sp,maxLines=3,overflow=TextOverflow.Ellipsis,modifier=Modifier.weight(1f))
+            Text(displayTitle(card),fontSize=20.sp,maxLines=3,overflow=TextOverflow.Ellipsis,modifier=Modifier.weight(1f))
             Text("Раздач: "+card.optInt("release_count")+" · сиды: "+card.optional("seeders").ifEmpty{"?"},fontSize=12.sp)
             card.optJSONObject("resume_target")?.let { target -> Text("Позиция: ${target.optLong("position_ms")/60000} мин",fontSize=12.sp) }
         }
+    }
+}
+
+@Composable
+private fun CinemaPoster(url:String,modifier:Modifier) {
+    var state by remember(url) {mutableIntStateOf(0)}
+    Box(modifier.background(Color(0xFF263244))) {
+        if(state!=1) Text(if(state==2) "Постер временно недоступен" else "Загрузка постера…",modifier=Modifier.padding(16.dp),color=Muted,fontSize=13.sp)
+        AsyncImage(model=url,contentDescription=null,modifier=Modifier.fillMaxSize(),contentScale=ContentScale.Crop,
+            onSuccess={state=1},onError={state=2})
     }
 }

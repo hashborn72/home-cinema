@@ -1,7 +1,8 @@
 services:
   backend:
     build: ./backend
-    image: local/home-cinema-dev:0.4.0
+    image: local/home-cinema-dev:0.5.0
+    dns: [1.1.1.1]
     container_name: home-cinema-dev
     restart: unless-stopped
     ports:

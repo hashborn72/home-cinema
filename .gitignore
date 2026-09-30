@@ -10,6 +10,7 @@ data/
 *.key
 device-token
 jackett-key
+tmdb-token
 *.sqlite*
 *.keystore
 __pycache__/
