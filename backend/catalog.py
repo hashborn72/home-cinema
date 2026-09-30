@@ -61,12 +61,12 @@ def identify(raw, source, kind, release_id):
     return {'id':digest(identity),'title':title,'aliases':titles[1:], 'year':year,'media_type':kind,
             'match':confidence,'season':season,'episode':episode,'quality':quality[0] if quality else None}
 
-def parse_feed(data, source):
+def parse_feed(data, source, limit=100):
     if b'<!DOCTYPE' in data.upper() or b'<!ENTITY' in data.upper(): raise ValueError('Unsafe feed')
     root = ET.fromstring(data)
     if root.tag != 'rss': raise ValueError('Invalid feed')
     rows = []
-    for item in root.findall('./channel/item')[:100]:
+    for item in root.findall('./channel/item')[:limit]:
         attrs, cats = {}, []
         for child in item:
             tag = child.tag.rsplit('}', 1)[-1]
@@ -112,6 +112,7 @@ class Catalog:
               CREATE INDEX IF NOT EXISTS catalog_release_content ON catalog_releases(content_id);
               CREATE TABLE IF NOT EXISTS catalog_sources(source TEXT PRIMARY KEY, fetched_at REAL NOT NULL DEFAULT 0, attempted_at REAL NOT NULL DEFAULT 0, error TEXT, received INTEGER NOT NULL DEFAULT 0);
               CREATE TABLE IF NOT EXISTS catalog_categories(url TEXT PRIMARY KEY, kind TEXT, checked_at REAL NOT NULL);
+              CREATE TABLE IF NOT EXISTS catalog_provider_items(id TEXT PRIMARY KEY, payload TEXT NOT NULL);
             ''')
 
     @contextmanager
@@ -222,7 +223,7 @@ class Catalog:
         for source,title in SOURCES.items():
             state = states.get(source,{})
             fetched = state.get('fetched_at',0)
-            selected = [r for r in releases if r['source']==source and r.get('seen_at')==fetched]
+            selected = [r for r in releases if fetched and r['source']==source and r.get('seen_at')==fetched]
             cards = self.cards(selected)
             cards.sort(key=lambda r: (r['seeders'] or 0,r['published_at']) if source=='rutor' else (True,r.get('source_rank',0)) if source=='anwap' else ((r['media_type']=='movie') if source=='exkinoray' else True,r['published_at']),reverse=True)
             shelves.append({'id':source,'title':title,'results':cards[:40], 'fetched_at':fetched,
@@ -247,7 +248,13 @@ class Catalog:
     def detail(self, content_id):
         with self.db() as db:
             releases = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM catalog_releases WHERE content_id=?',(content_id,))]
-        if not releases: return None
-        card = self.cards(releases)[0]
+        with self.db() as db:
+            entry=db.execute('SELECT payload FROM catalog_provider_items WHERE id=?',(content_id,)).fetchone()
+        if not releases and not entry: return None
+        card = self.cards(releases)[0] if releases else json.loads(entry['payload'])
+        if entry:
+            directory=json.loads(entry['payload'])
+            card['provider_title']=directory.get('provider_title',card['title'])
+            card.setdefault('metadata',directory.get('metadata'))
         card['releases'] = [dict(id=r['id'],source=r['source'],title=r['raw'],kind='direct' if r['source']=='anwap' else 'torrent',seeders=r['seeders'],size=r['size'],published_at=r['published_at'],quality=r['content']['quality'],season=r['content']['season'],episode=r['content']['episode']) for r in sorted(releases,key=lambda r:(r['published_at'],r['seeders'] or 0),reverse=True)]
         return card

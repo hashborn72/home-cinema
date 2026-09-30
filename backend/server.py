@@ -17,6 +17,7 @@ from library import Library
 from anwap import Search
 from streaming import Streams
 from pairing import Pairing
+from providers import Providers
 from settings import public_url
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -58,6 +59,11 @@ class SearchQuery(BaseModel):
 class PairCode(BaseModel):
     model_config = ConfigDict(extra='forbid')
     code: str = Field(pattern=r'^[0-9]{12}$')
+
+class ProviderQuery(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    q: str = Field(default='',max_length=120)
+    offset: StrictInt = Field(default=0,ge=0,le=10000)
 
 def create_app(data_dir: Path, test_token: str | None = None):
     auth_mode = os.environ.get('CINEMA_AUTH_MODE', 'token')
@@ -108,6 +114,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
     library = Library(catalog)
     anwap_search = Search(catalog)
     streams = Streams(catalog)
+    providers = Providers(catalog)
     @asynccontextmanager
     async def lifespan(app):
         if test_token is None: catalog.start(); metadata.start()
@@ -115,9 +122,11 @@ def create_app(data_dir: Path, test_token: str | None = None):
         finally:
             catalog.stop(); metadata.stop()
             torrents.pool.shutdown(wait=False,cancel_futures=True)
+            providers.pool.shutdown(wait=False,cancel_futures=True)
     app = FastAPI(title='Home Cinema development backend', docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.catalog = catalog
     app.state.torrents = torrents
+    app.state.providers = providers
 
     def auth(authorization: str = Header(default='')):
         if auth_mode == 'trusted-lan':
@@ -162,7 +171,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'version': '0.7.0', 'environment': 'compose' if os.environ.get('CINEMA_STACK_SETUP') == '1' else 'development'}
+        return {'status': 'ok', 'version': '0.8.0', 'environment': 'compose' if os.environ.get('CINEMA_STACK_SETUP') == '1' else 'development'}
 
     @app.get('/api/v1/metadata/status', dependencies=[Depends(auth)])
     def metadata_status():return metadata.status()
@@ -251,6 +260,28 @@ def create_app(data_dir: Path, test_token: str | None = None):
         response=catalog.home()
         for shelf in response['shelves']: metadata.enrich(shelf['results'])
         return response
+
+    def provider_response(source,query,offset,start=False):
+        try: response=(providers.start if start else providers.state)(source,query,offset)
+        except ValueError: raise HTTPException(422,'Invalid provider query')
+        except RuntimeError: raise HTTPException(429,'Provider is busy; retry shortly')
+        metadata.enrich(response.get('results',[]))
+        return response
+
+    @app.post('/api/v1/providers/{source}', dependencies=[Depends(auth)])
+    def provider_start(source:str,body:ProviderQuery):
+        return provider_response(source,body.q,body.offset,True)
+
+    @app.get('/api/v1/providers/{source}', dependencies=[Depends(auth)])
+    def provider_state(source:str,q:str='',offset:int=0):
+        return provider_response(source,q,offset)
+
+    @app.api_route('/api/v1/catalog/items/{content_id}/expand',methods=['GET','POST'],dependencies=[Depends(auth)])
+    def expand_series(content_id:str,request:Request):
+        try:return providers.expand(content_id,request.method=='POST')
+        except KeyError:raise HTTPException(404,'Series not found')
+        except ValueError:raise HTTPException(422,'Not a supported series')
+        except RuntimeError:raise HTTPException(429,'Provider is busy; retry shortly')
 
     @app.get('/api/v1/catalog/search', dependencies=[Depends(auth)])
     def catalog_search(q: str = '', kind: str | None = None):

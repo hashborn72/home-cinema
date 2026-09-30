@@ -1,7 +1,7 @@
 name: home-cinema
 
 x-backend: &backend-image
-  image: local/home-cinema-backend:0.7.0
+  image: local/home-cinema-backend:0.8.0
   build: ./backend
   pull_policy: build
 

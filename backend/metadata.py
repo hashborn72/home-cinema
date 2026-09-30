@@ -81,7 +81,8 @@ class Metadata:
 
     def _poster_url(self,url):
         p=urlparse(url)
-        if p.scheme!='https' or p.netloc not in ('mm.anwap.media','static.tvmaze.com','image.tmdb.org') or p.query or p.fragment:raise KeyError('Invalid poster')
+        if p.scheme!='https' or p.netloc not in ('mm.anwap.media','static.tvmaze.com','image.tmdb.org','www.lostfilm.tv') or p.query or p.fragment:raise KeyError('Invalid poster')
+        if p.netloc=='www.lostfilm.tv' and not re.fullmatch(r'/Static/Images/\d+/Posters/image(?:_s\d+)?\.jpg',p.path):raise KeyError('Invalid poster')
         if p.netloc=='mm.anwap.media' and not re.fullmatch(r'/films/screen/\d+\.jpg',p.path):raise KeyError('Invalid poster')
         if p.netloc=='image.tmdb.org' and not re.fullmatch(r'/t/p/w500/[A-Za-z0-9]+\.(?:jpg|png)',p.path):raise KeyError('Invalid poster')
         folder=self.catalog.data_dir/'posters';folder.mkdir(mode=0o700,exist_ok=True)
