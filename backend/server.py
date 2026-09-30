@@ -60,6 +60,9 @@ class PairCode(BaseModel):
     code: str = Field(pattern=r'^[0-9]{12}$')
 
 def create_app(data_dir: Path, test_token: str | None = None):
+    auth_mode = os.environ.get('CINEMA_AUTH_MODE', 'token')
+    if auth_mode not in ('token', 'trusted-lan'):
+        raise ValueError('Invalid CINEMA_AUTH_MODE')
     data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     token_file = data_dir / 'device-token'
     if test_token is None and not token_file.exists():
@@ -117,13 +120,22 @@ def create_app(data_dir: Path, test_token: str | None = None):
     app.state.torrents = torrents
 
     def auth(authorization: str = Header(default='')):
+        if auth_mode == 'trusted-lan':
+            return
         legacy = hmac.compare_digest(authorization.encode(), ('Bearer ' + token).encode())
         device = authorization.removeprefix('Bearer ') if authorization.startswith('Bearer ') else ''
         if not legacy and not pairing.authorized(device):
             raise HTTPException(401, 'Device authentication required')
 
+    @app.get('/api/v1/connection')
+    def connection_info():
+        return JSONResponse({'service': 'home-cinema', 'auth_mode': auth_mode},
+                            headers={'Cache-Control': 'no-store'})
+
     @app.post('/api/v1/pair')
     def pair_device(body: PairCode):
+        if auth_mode == 'trusted-lan':
+            raise HTTPException(409, 'Pairing is not needed in trusted LAN mode')
         try: credential = pairing.redeem(body.code)
         except ValueError: raise HTTPException(400, 'Invalid or expired code')
         except RuntimeError: raise HTTPException(429, 'Try again in one minute')
@@ -135,9 +147,9 @@ def create_app(data_dir: Path, test_token: str | None = None):
         return '''<!doctype html><html lang="ru"><meta charset="utf-8">
         <meta name="viewport" content="width=device-width,initial-scale=1">
         <title>Домашняя медиатека</title><body style="font:22px sans-serif;padding:32px">
-        <h1>Домашняя медиатека 0.6.0</h1>
+        <h1>Домашняя медиатека</h1>
         <p>'''+download+'''</p>
-        <p>Установите APK, откройте приложение и введите одноразовый код подключения.</p>
+        <p>Установите APK, откройте приложение, укажите адрес сервера и нажмите «Подключить».</p>
         <p>Сервер: '''+html.escape(public_url())+'''<br>Для видео нужен Just Player.</p>
         <p>Только домашняя сеть. Не открывайте этот сервер в интернет.</p></body></html>'''
 
@@ -146,11 +158,11 @@ def create_app(data_dir: Path, test_token: str | None = None):
         path = Path('/releases/home-cinema.apk')
         if not path.is_file(): raise HTTPException(404, 'Release not published')
         return FileResponse(path, media_type='application/vnd.android.package-archive',
-                            filename='home-cinema-0.6.0.apk', headers={'Cache-Control': 'no-cache'})
+                            filename='home-cinema.apk', headers={'Cache-Control': 'no-cache'})
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'version': '0.6.1-stack', 'environment': 'compose' if os.environ.get('CINEMA_STACK_SETUP') == '1' else 'development'}
+        return {'status': 'ok', 'version': '0.7.0', 'environment': 'compose' if os.environ.get('CINEMA_STACK_SETUP') == '1' else 'development'}
 
     @app.get('/api/v1/metadata/status', dependencies=[Depends(auth)])
     def metadata_status():return metadata.status()

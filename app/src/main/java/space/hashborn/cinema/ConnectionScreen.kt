@@ -18,14 +18,13 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun ConnectionScreen(currentBackend: String, canCancel: Boolean, onCancel: () -> Unit,
-                     onConnect: suspend (String, String) -> Unit) {
+                     onConnect: suspend (String) -> Unit) {
     var backend by remember { mutableStateOf(currentBackend) }
-    var code by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
-    val codeFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { codeFocus.requestFocus() }
+    val connectFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { connectFocus.requestFocus() }
     MaterialTheme {
         Column(Modifier.fillMaxSize().background(Color(0xFF101722)).padding(40.dp),
                verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -37,17 +36,11 @@ fun ConnectionScreen(currentBackend: String, canCancel: Boolean, onCancel: () ->
                 modifier=Modifier.fillMaxWidth().background(Color(0xFF29374B)).padding(12.dp),
                 textStyle=TextStyle(color=Color.White,fontSize=19.sp),singleLine=true,
                 keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Uri))
-            Text("Одноразовый код — 12 цифр",color=Color.White)
-            BasicTextField(code, { if (!busy) code=it.filter { c -> c in '0'..'9' }.take(12) },
-                modifier=Modifier.fillMaxWidth().focusRequester(codeFocus)
-                    .background(Color(0xFF29374B)).padding(12.dp),
-                textStyle=TextStyle(color=Color.White,fontSize=22.sp),singleLine=true,
-                keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
             Row(horizontalArrangement=Arrangement.spacedBy(16.dp)) {
-                Button(enabled=!busy && code.length==12,onClick={
+                Button(modifier=Modifier.focusRequester(connectFocus),enabled=!busy && backend.isNotBlank(),onClick={
                     busy=true;error=""
                     scope.launch {
-                        try { onConnect(backend,code) }
+                        try { onConnect(backend) }
                         catch(e:Exception) { error=e.message ?: "Подключение не удалось" }
                         finally { busy=false }
                     }
@@ -55,7 +48,7 @@ fun ConnectionScreen(currentBackend: String, canCancel: Boolean, onCancel: () ->
                 if(canCancel) Button(enabled=!busy,onClick=onCancel) { Text("Назад") }
             }
             if(error.isNotEmpty()) Text(error,color=Color(0xFFFCA5A5),fontSize=16.sp)
-            Text("Код действует однократно. Just Player должен быть установлен отдельно.\n"+
+            Text("Доверенная локальная сеть — без кода и ключа. Just Player устанавливается отдельно.\n"+
                  "Подключение по HTTP предназначено только для доверенной домашней сети.",
                  color=Color(0xFFA8B5C7),fontSize=13.sp)
         }

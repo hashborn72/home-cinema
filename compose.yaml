@@ -1,7 +1,7 @@
 name: home-cinema
 
 x-backend: &backend-image
-  image: local/home-cinema-backend:0.6.1
+  image: local/home-cinema-backend:0.7.0
   build: ./backend
   pull_policy: build
 
@@ -78,6 +78,7 @@ services:
   backend:
     <<: *backend-image
     environment:
+      CINEMA_AUTH_MODE: "${CINEMA_AUTH_MODE:-trusted-lan}"
       CINEMA_PUBLIC_URL: "http://${CINEMA_HOST:-192.168.1.144}:${BACKEND_PORT:-8093}"
       JACKETT_URL: http://jackett:9117
       JACKETT_LEGACY_URLS: "http://192.168.1.144:8091"

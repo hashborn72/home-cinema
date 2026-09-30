@@ -34,6 +34,7 @@ class MainActivity : ComponentActivity() {
     private var mediaUrl = ""
     private var showProbe by mutableStateOf(false)
     private var showConnection by mutableStateOf(false)
+    private fun hasConnection() = prefs.getBoolean("trusted_lan", false) || !prefs.getString("token", "").isNullOrEmpty()
     private val launcher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val session = prefs.getString("active_session", null)
         val data = result.data
@@ -64,13 +65,13 @@ class MainActivity : ComponentActivity() {
             intent.removeExtra("backend_token")
         }
         lastResult = prefs.getString("last_result", lastResult) ?: lastResult
-        showConnection = prefs.getString("token", "").isNullOrEmpty()
+        showConnection = !hasConnection()
         setContent {
             if (showConnection) {
-                val hasToken = !prefs.getString("token", "").isNullOrEmpty()
-                BackHandler(enabled=hasToken) { showConnection=false }
-                ConnectionScreen(prefs.getString("backend", "http://192.168.0.221:18093")!!,
-                    canCancel=hasToken,onCancel={showConnection=false},onConnect={base,code -> connectDevice(base,code)})
+                val connected = hasConnection()
+                BackHandler(enabled=connected) { showConnection=false }
+                ConnectionScreen(prefs.getString("backend", "http://192.168.1.144:8093")!!,
+                    canCancel=connected,onCancel={showConnection=false},onConnect={base -> connectDevice(base)})
             } else if (!showProbe) {
                 CatalogScreen(request = { path -> request(path) },
                     post = { path, body -> request(path,body) },
@@ -103,46 +104,45 @@ class MainActivity : ComponentActivity() {
         if (!showConnection) refresh()
     }
 
-    private suspend fun connectDevice(rawBase: String, code: String) {
+    private suspend fun connectDevice(rawBase: String) {
         if (prefs.contains("pending_result") || prefs.contains("active_session"))
             throw IllegalStateException("Сначала вернитесь из плеера и сохраните результат через «Обновить с сервера».")
         val base = rawBase.trim().trimEnd('/')
         val uri = Uri.parse(base)
         require(uri.scheme in listOf("http","https") && !uri.host.isNullOrBlank() &&
                 uri.userInfo == null && uri.query == null && uri.fragment == null && uri.path.isNullOrEmpty()) {
-            "Введите адрес сервера вида http://192.168.0.221:18093"
+            "Введите адрес сервера вида http://192.168.1.144:8093"
         }
-        val credential = withContext(Dispatchers.IO) {
-            val conn=URL(base+"/api/v1/pair").openConnection() as HttpURLConnection
+        withContext(Dispatchers.IO) {
+            val conn=URL(base+"/api/v1/connection").openConnection() as HttpURLConnection
             try {
                 conn.connectTimeout=6000;conn.readTimeout=6000;conn.instanceFollowRedirects=false
-                conn.requestMethod="POST";conn.doOutput=true
-                conn.setRequestProperty("Content-Type","application/json")
-                conn.outputStream.use { it.write(JSONObject().put("code",code).toString().toByteArray(Charsets.UTF_8)) }
                 when(conn.responseCode) {
-                    200 -> JSONObject(conn.inputStream.bufferedReader().use {it.readText()}).getString("token")
-                    400 -> throw IllegalStateException("Код неверный, уже использован или истёк.")
-                    429 -> throw IllegalStateException("Слишком много попыток. Подождите минуту.")
+                    200 -> {
+                        val info=JSONObject(conn.inputStream.bufferedReader().use {it.readText()})
+                        check(info.optString("service")=="home-cinema") { "По этому адресу другой сервис." }
+                        check(info.optString("auth_mode")=="trusted-lan") { "На сервере не включён доверенный режим локальной сети." }
+                    }
                     else -> throw IllegalStateException("Сервер вернул HTTP ${conn.responseCode}")
                 }
             } catch(e:java.io.IOException) {
                 throw IllegalStateException("Нет связи с сервером. Проверьте адрес и сеть телевизора.")
             } finally { conn.disconnect() }
         }
-        check(prefs.edit().putString("backend",base).putString("token",credential).commit()) {
-            "Не удалось сохранить подключение. Потребуется новый одноразовый код."
+        check(prefs.edit().putString("backend",base).putBoolean("trusted_lan",true).remove("token").commit()) {
+            "Не удалось сохранить адрес сервера. Попробуйте ещё раз."
         }
         showProbe=false;showConnection=false;refresh()
     }
 
     private suspend fun request(path: String, body: JSONObject? = null): JSONObject = withContext(Dispatchers.IO) {
-        val base = prefs.getString("backend", "http://192.168.0.221:18093")!!
+        val base = prefs.getString("backend", "http://192.168.1.144:8093")!!
         val token = prefs.getString("token", "")!!
-        if (token.isEmpty()) throw IllegalStateException("Устройство ещё не подключено к backend")
+        if (!hasConnection()) throw IllegalStateException("Сначала подключитесь к серверу")
         val conn = URL(base + path).openConnection() as HttpURLConnection
         try {
             conn.connectTimeout = 6000; conn.readTimeout = if(path=="/api/v1/playback/file-sessions") 55000 else 6000
-            conn.setRequestProperty("Authorization", "Bearer $token")
+            if (token.isNotEmpty()) conn.setRequestProperty("Authorization", "Bearer $token")
             if (body != null) {
                 conn.requestMethod = "POST"; conn.doOutput = true
                 conn.setRequestProperty("Content-Type", "application/json")

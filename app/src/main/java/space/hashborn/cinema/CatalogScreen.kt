@@ -350,7 +350,7 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                     }
                 }
                 item {
-                    Text("О приложении · 0.6.0 · Личная медиатека",color=Muted,fontSize=16.sp)
+                    Text("О приложении · 0.7.0 · Личная медиатека",color=Muted,fontSize=16.sp)
                     Image(painterResource(R.drawable.tmdb_logo),contentDescription="TMDB",modifier=Modifier.width(137.dp).height(32.dp))
                     Text("This product uses the TMDB API but is not endorsed or certified by TMDB.",color=Muted,fontSize=13.sp)
                     Text("TMDB — описания и изображения. Anwap и TVmaze указаны в карточках. Воспроизведение — Just Player.",color=Muted,fontSize=13.sp)
