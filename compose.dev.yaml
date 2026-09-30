@@ -1,0 +1,20 @@
+services:
+  backend:
+    build: ./backend
+    image: local/home-cinema-dev:0.1.0
+    container_name: home-cinema-dev
+    restart: unless-stopped
+    ports:
+      - "192.168.0.221:18093:8080"
+    volumes:
+      - ./data:/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 192m
+    cpus: 0.5
+    pids_limit: 64
+    logging:
+      options:
+        max-size: "2m"
+        max-file: "2"

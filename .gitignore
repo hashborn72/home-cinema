@@ -1,0 +1,9 @@
+.toolchain/
+.gradle/
+**/build/
+local.properties
+dist/
+data/
+*.env
+*.keystore
+__pycache__/
