@@ -65,7 +65,10 @@ class MainActivity : ComponentActivity() {
         lastResult = prefs.getString("last_result", lastResult) ?: lastResult
         setContent {
             if (!showProbe) {
-                CatalogScreen(request = { path -> request(path) }, onProbe = { showProbe = true })
+                CatalogScreen(request = { path -> request(path) },
+                    post = { path, body -> request(path,body) },
+                    onPlay = { release, file, resume -> playFile(release,file,resume) },
+                    playerStatus = status, playerBusy = busy, onProbe = { showProbe = true })
             } else {
             BackHandler { showProbe = false }
             MaterialTheme {
@@ -117,6 +120,29 @@ class MainActivity : ComponentActivity() {
         prefs.edit().remove("pending_result").commit()
     }
 
+    private suspend fun playFile(release: String, file: Int, resume: Boolean) {
+        if (busy) throw IllegalStateException("Дождись сохранения результата плеера")
+        busy = true
+        try {
+            syncPending()
+            val session = request("/api/v1/playback/file-sessions",JSONObject()
+                .put("release_id",release).put("file_id",file).put("resume",resume))
+            val url = session.getString("stream_url")
+            prefs.edit().putString("active_session",session.getString("id")).commit()
+            launcher.launch(Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(Uri.parse(url),"video/*")
+                setPackage("com.brouken.player")
+                putExtra("position",session.getInt("start_position_ms"))
+                putExtra("return_result",true)
+                putExtra("title",session.getString("title"))
+            })
+            status = "Запущен Just Player. Back возвращает подтверждённую позицию."
+        } catch (_: ActivityNotFoundException) {
+            prefs.edit().remove("active_session").commit()
+            throw IllegalStateException("Just Player не установлен")
+        } finally { busy=false }
+    }
+
     private fun refresh() {
         if (busy) return
         scope.launch {
@@ -126,7 +152,7 @@ class MainActivity : ComponentActivity() {
                 val info = request("/api/v1/probe")
                 mediaUrl = info.getString("stream_url")
                 progress = if (info.isNull("position_ms")) null else info.getLong("position_ms")
-                status = "Backend доступен. Выбери режим запуска и вернись кнопкой Back."
+                status = if(showProbe) "Backend доступен. Выбери режим запуска и вернись кнопкой Back." else "Синхронизация выполнена. $lastResult"
             } catch (e: Exception) {
                 status = "Нет связи: ${e.message}. Полученный результат сохранён на устройстве; нажми «Обновить»."
             } finally { busy = false }

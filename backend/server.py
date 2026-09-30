@@ -10,6 +10,8 @@ import time
 import uuid
 from contextlib import contextmanager, asynccontextmanager
 from catalog import Catalog
+from torrents import Torrents
+from metadata import Metadata
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
@@ -31,6 +33,12 @@ class Result(BaseModel):
     position_ms: StrictInt | None = Field(default=None, ge=0, le=2_147_483_647)
     duration_ms: StrictInt | None = Field(default=None, gt=0, le=2_147_483_647)
     end_by: str | None = None
+
+class FileStart(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    release_id: str = Field(min_length=1,max_length=100)
+    file_id: StrictInt = Field(ge=1)
+    resume: StrictBool = False
 
 def create_app(data_dir: Path, test_token: str | None = None):
     data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -72,13 +80,18 @@ def create_app(data_dir: Path, test_token: str | None = None):
         ''')
     os.chmod(db_path, 0o600)
     catalog = Catalog(data_dir)
+    torrents = Torrents(catalog)
+    metadata = Metadata(catalog)
     @asynccontextmanager
     async def lifespan(app):
-        if test_token is None: catalog.start()
+        if test_token is None: catalog.start(); metadata.start()
         try: yield
-        finally: catalog.stop()
+        finally:
+            catalog.stop(); metadata.stop()
+            torrents.pool.shutdown(wait=False,cancel_futures=True)
     app = FastAPI(title='Home Cinema development backend', docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.catalog = catalog
+    app.state.torrents = torrents
 
     def auth(authorization: str = Header(default='')):
         if not hmac.compare_digest(authorization.encode(), ('Bearer ' + token).encode()):
@@ -86,21 +99,63 @@ def create_app(data_dir: Path, test_token: str | None = None):
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'version': '0.2.0-catalog', 'environment': 'development'}
+        return {'status': 'ok', 'version': '0.3.0-playback', 'environment': 'development'}
+
+    def selection(release_id, file_id):
+        try: return torrents.selection(release_id,file_id)
+        except KeyError: raise HTTPException(404,'Release not found')
+        except ValueError: raise HTTPException(409,'Prepare the release and select a video file')
+
+    @app.post('/api/v1/releases/{release_id}/prepare', dependencies=[Depends(auth)])
+    def prepare_release(release_id: str):
+        try: return torrents.prepare(release_id)
+        except KeyError: raise HTTPException(404,'Release not found')
+        except RuntimeError: raise HTTPException(429,'Two releases are already being prepared')
+
+    @app.get('/api/v1/releases/{release_id}/files', dependencies=[Depends(auth)])
+    def release_files(release_id: str):
+        try: state=torrents.state(release_id)
+        except KeyError: raise HTTPException(404,'Release not found')
+        if state['status']=='ready':
+            with db() as conn:
+                for file in state['files']:
+                    item=selection(release_id,file['id'])
+                    row=conn.execute('SELECT position_ms,completed FROM progress WHERE profile_id=? AND content_id=? AND file_key=?',('main',item['content_id'],item['file_key'])).fetchone()
+                    file['position_ms']=row['position_ms'] if row else None
+                    file['completed']=bool(row['completed']) if row else False
+        return state
+
+    @app.post('/api/v1/playback/file-sessions', dependencies=[Depends(auth)])
+    def start_file(body: FileStart):
+        item=selection(body.release_id,body.file_id)
+        session_id=str(uuid.uuid4())
+        with db() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row=conn.execute('SELECT * FROM progress WHERE profile_id=? AND content_id=? AND file_key=?',('main',item['content_id'],item['file_key'])).fetchone()
+            position=(row['position_ms'] or 0) if body.resume and row and not row['completed'] else 0
+            conn.execute('INSERT INTO playback_sessions(id,content_id,file_key,started_at,start_position_ms) VALUES (?,?,?,?,?)',
+                         (session_id,item['content_id'],item['file_key'],time.time(),position))
+        return dict(item,id=session_id,start_position_ms=position)
 
     @app.get('/api/v1/catalog/home', dependencies=[Depends(auth)])
-    def catalog_home(): return catalog.home()
+    def catalog_home():
+        response=catalog.home()
+        for shelf in response['shelves']: metadata.enrich(shelf['results'])
+        return response
 
     @app.get('/api/v1/catalog/search', dependencies=[Depends(auth)])
     def catalog_search(q: str = '', kind: str | None = None):
         if len(q) > 200 or kind not in (None, 'movie', 'tv'):
             raise HTTPException(422, 'Invalid filter')
-        return catalog.search(q, kind)
+        response=catalog.search(q, kind)
+        metadata.enrich(response['results'])
+        return response
 
     @app.get('/api/v1/catalog/items/{content_id}', dependencies=[Depends(auth)])
     def catalog_detail(content_id: str):
         item = catalog.detail(content_id)
         if item is None: raise HTTPException(404, 'Content not found')
+        metadata.enrich([item])
         return item
 
     @app.get('/probe-media', include_in_schema=False)

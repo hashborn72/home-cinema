@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -22,6 +23,10 @@ import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
+import coil.compose.AsyncImage
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.ui.platform.LocalContext
 
 private val Ink = Color(0xFF101722)
 private val Muted = Color(0xFFA8B5C7)
@@ -33,7 +38,10 @@ private fun cardSubtitle(card: JSONObject): String {
 }
 
 @Composable
-fun CatalogScreen(request: suspend (String) -> JSONObject, onProbe: () -> Unit) {
+fun CatalogScreen(request: suspend (String) -> JSONObject,
+    post: suspend (String,JSONObject) -> JSONObject,
+    onPlay: suspend (String,Int,Boolean) -> Unit,
+    playerStatus: String, playerBusy: Boolean, onProbe: () -> Unit) {
     val scope = rememberCoroutineScope()
     var section by remember { mutableStateOf("Главная") }
     var query by remember { mutableStateOf("") }
@@ -41,6 +49,12 @@ fun CatalogScreen(request: suspend (String) -> JSONObject, onProbe: () -> Unit) 
     var detail by remember { mutableStateOf<JSONObject?>(null) }
     var error by remember { mutableStateOf("") }
     var opening by remember { mutableStateOf(false) }
+    var release by remember { mutableStateOf<JSONObject?>(null) }
+    var files by remember { mutableStateOf<JSONObject?>(null) }
+    var preparing by remember { mutableStateOf(false) }
+    var fileError by remember { mutableStateOf("") }
+    var prepareAttempt by remember { mutableIntStateOf(0) }
+    val context = LocalContext.current
     var selectedId by remember { mutableStateOf("") }
     var selectedRow by remember { mutableStateOf("") }
     var restoreFocus by remember { mutableStateOf(false) }
@@ -82,8 +96,38 @@ fun CatalogScreen(request: suspend (String) -> JSONObject, onProbe: () -> Unit) 
         }
     }
     fun back() { detail = null; restoreFocus = true }
+    LaunchedEffect(release,prepareAttempt) {
+        val current = release ?: return@LaunchedEffect
+        val rid = current.getString("id")
+        preparing = true; files = null; fileError = ""
+        try {
+            post("/api/v1/releases/$rid/prepare",JSONObject())
+            withTimeout(120000) {
+                while (true) {
+                    val result = request("/api/v1/releases/$rid/files")
+                    files = result
+                    when(result.getString("status")) {
+                        "ready" -> break
+                        "error" -> throw IllegalStateException("Не удалось получить файлы. Раздача или источник недоступны.")
+                    }
+                    delay(2000)
+                }
+            }
+        } catch (_: TimeoutCancellationException) { fileError = "Подготовка заняла слишком долго. Можно повторить." }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (e: Exception) { fileError = e.message ?: "Ошибка подготовки" }
+        finally { preparing = false }
+    }
+    LaunchedEffect(playerBusy,playerStatus) {
+        val current = release
+        if (!playerBusy && !preparing && current != null && files?.optString("status")=="ready") {
+            try { files=request("/api/v1/releases/"+current.getString("id")+"/files") }
+            catch(cancelled: CancellationException) {throw cancelled}
+            catch(_:Exception) { /* Keep the last displayed positions while offline. */ }
+        }
+    }
     BackHandler(enabled = detail != null || section != "Главная") {
-        if (detail != null) back() else section = "Главная"
+        if (release != null) release = null else if (detail != null) back() else section = "Главная"
     }
     fun open(card: JSONObject, row: String) {
         if (opening) return
@@ -100,24 +144,68 @@ fun CatalogScreen(request: suspend (String) -> JSONObject, onProbe: () -> Unit) 
     val visibleSection = section
     val visibleData = data?.takeIf { it.first == visibleSection }?.second
     MaterialTheme(colorScheme=darkColorScheme()) {
-        if (detail != null) {
+        if (release != null) {
+            val current = release!!
+            LazyColumn(Modifier.fillMaxSize().background(Ink).padding(40.dp),verticalArrangement=Arrangement.spacedBy(18.dp)) {
+                item { Button(onClick={release=null}) {Text("← К раздачам")} }
+                item { Text(current.getString("title"),fontSize=24.sp,color=Color.White) }
+                item { Text("Выбери файл. Позиция сохраняется отдельно для каждого файла и версии раздачи.",color=Muted) }
+                if(preparing) item { Text("Получаем список файлов через TorrServer…",color=Color(0xFF5EEAD4)) }
+                if(fileError.isNotEmpty()) item {
+                    Text(fileError,color=Color(0xFFFBBF24))
+                    Button(onClick={prepareAttempt++},enabled=!preparing) {Text("Повторить")}
+                }
+                items(files?.optJSONArray("files")?.objects() ?: emptyList(),key={it.getInt("id")}) { file ->
+                    Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                        Text(file.getString("path"),color=Color.White,fontSize=18.sp)
+                        Text((if(file.optBoolean("sample")) "Образец · " else "") +
+                            (if(file.optBoolean("completed")) "Плеер сообщил о завершении" else if(!file.isNull("position_ms")) "Сохранено: ${file.optLong("position_ms")/60000} мин" else "Позиция ещё не сохранена"),color=Muted)
+                        Row(horizontalArrangement=Arrangement.spacedBy(18.dp)) {
+                            listOf(false to "С начала",true to "Продолжить").forEach { (resume,label) ->
+                                Button(enabled=!playerBusy && !preparing,onClick={scope.launch {
+                                    try { onPlay(current.getString("id"),file.getInt("id"),resume); fileError="" }
+                                    catch(e:Exception) {fileError=e.message ?: "Ошибка запуска"}
+                                }}) { Text(label) }
+                            }
+                        }
+                    }
+                }
+                item { Text(playerStatus,color=Muted,fontSize=13.sp) }
+                item { Button(onClick={scope.launch {
+                    try {files=request("/api/v1/releases/"+current.getString("id")+"/files")}
+                    catch(_:Exception) {fileError="Нет связи с сервером"}
+                }},enabled=!preparing) {Text("Обновить позиции")} }
+            }
+        } else if (detail != null) {
             val item = detail!!
             LazyColumn(Modifier.fillMaxSize().background(Ink).padding(40.dp), verticalArrangement=Arrangement.spacedBy(16.dp)) {
                 item { Button(onClick={back()}) { Text("← К каталогу") } }
                 item { Text(item.getString("title"),fontSize=32.sp,color=Color.White) }
                 item { Text(cardSubtitle(item)+" · "+item.optInt("release_count")+" раздач",color=Muted) }
-                item { Text("Метаданные из названий раздач. Постер и описание ещё не сопоставлены.",color=Muted,fontSize=14.sp) }
-                item { Text("Доступные раздачи",fontSize=23.sp,color=Color.White) }
-                items(item.getJSONArray("releases").objects(),key={it.getString("id")}) { release ->
-                    val size = if(release.isNull("size")) "Размер неизвестен" else "%.1f ГБ".format(release.optDouble("size")/1073741824.0)
-                    Surface(onClick={}, modifier=Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(18.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
-                            Text(release.getString("title"),fontSize=18.sp,maxLines=3,overflow=TextOverflow.Ellipsis)
-                            Text(release.getString("source")+" · "+size+" · сиды: "+release.optional("seeders").ifEmpty{"неизвестно"},fontSize=14.sp)
+                val metadata=item.optJSONObject("metadata")
+                item {
+                    Row(horizontalArrangement=Arrangement.spacedBy(24.dp)) {
+                        if(metadata?.optional("poster")?.isNotEmpty()==true) AsyncImage(model=metadata.getString("poster"),contentDescription=null,modifier=Modifier.width(145.dp).height(215.dp),contentScale=ContentScale.Crop)
+                        Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                            Text(metadata?.optional("description")?.ifEmpty {null} ?: "Нет уверенного совпадения с базой описаний. Доступные раздачи можно открыть ниже.",color=Muted,fontSize=17.sp)
+                            if(metadata!=null) {
+                                Text("TVmaze · рейтинг: "+metadata.optional("rating").ifEmpty{"—"}+" · описание EN · CC BY-SA",color=Muted,fontSize=12.sp)
+                                Button(onClick={runCatching {context.startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(metadata.getString("url"))))}}) {Text("Источник: TVmaze")}
+                            }
                         }
                     }
                 }
-                item { Text("Этап каталога: запуск этих раздач через TorrServer будет подключён следующим шагом.",color=Muted,fontSize=14.sp) }
+                item { Text("Доступные раздачи",fontSize=23.sp,color=Color.White) }
+                items(item.getJSONArray("releases").objects(),key={it.getString("id")}) { rowRelease ->
+                    val size = if(rowRelease.isNull("size")) "Размер неизвестен" else "%.1f ГБ".format(rowRelease.optDouble("size")/1073741824.0)
+                    Surface(onClick={release=rowRelease}, modifier=Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(18.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
+                            Text(rowRelease.getString("title"),fontSize=18.sp,maxLines=3,overflow=TextOverflow.Ellipsis)
+                            Text(rowRelease.getString("source")+" · "+size+" · сиды: "+rowRelease.optional("seeders").ifEmpty{"неизвестно"},fontSize=14.sp)
+                        }
+                    }
+                }
+                item { Text("Выбери раздачу → видеофайл → Just Player",color=Muted,fontSize=14.sp) }
             }
         } else {
             LazyColumn(Modifier.fillMaxSize().background(Ink).padding(horizontal=40.dp,vertical=24.dp),state=columnState,verticalArrangement=Arrangement.spacedBy(20.dp)) {
@@ -180,7 +268,7 @@ fun CatalogScreen(request: suspend (String) -> JSONObject, onProbe: () -> Unit) 
                         }
                     }
                 }
-                item { Text("0.2 · Личный каталог · Jackett → TorrServer → Just Player",color=Muted,fontSize=12.sp) }
+                item { Text("0.3 · Личный каталог · Jackett → TorrServer → Just Player",color=Muted,fontSize=12.sp) }
             }
         }
     }
@@ -188,8 +276,11 @@ fun CatalogScreen(request: suspend (String) -> JSONObject, onProbe: () -> Unit) 
 
 @Composable
 private fun CinemaCard(card:JSONObject,requester:FocusRequester,onClick:()->Unit) {
-    Surface(onClick=onClick,modifier=Modifier.width(202.dp).height(185.dp).focusRequester(requester)) {
+    Surface(onClick=onClick,modifier=Modifier.width(202.dp).height(310.dp).focusRequester(requester)) {
         Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+            val poster=card.optJSONObject("metadata")?.optional("poster")
+            if(!poster.isNullOrEmpty()) AsyncImage(model=poster,contentDescription=null,modifier=Modifier.fillMaxWidth().height(145.dp),contentScale=ContentScale.Crop)
+            else Box(Modifier.fillMaxWidth().height(145.dp).background(Color(0xFF263244))) {Text("Без постера",modifier=Modifier.padding(16.dp),color=Muted,fontSize=14.sp)}
             Text(cardSubtitle(card),fontSize=13.sp)
             Text(card.getString("title"),fontSize=20.sp,maxLines=3,overflow=TextOverflow.Ellipsis,modifier=Modifier.weight(1f))
             Text("Раздач: "+card.optInt("release_count")+" · сиды: "+card.optional("seeders").ifEmpty{"?"},fontSize=12.sp)

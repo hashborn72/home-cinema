@@ -10,8 +10,8 @@ android {
         applicationId = "space.hashborn.cinema"
         minSdk = 23
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0-catalog"
+        versionCode = 3
+        versionName = "0.3.0-playback"
     }
     buildFeatures { compose = true }
     compileOptions {
@@ -27,5 +27,6 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.tv:tv-material:1.0.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
+    implementation("io.coil-kt:coil-compose:2.7.0")
     testImplementation("junit:junit:4.13.2")
 }
