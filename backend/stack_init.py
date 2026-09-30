@@ -60,11 +60,22 @@ def initialize(data, jackett, torrserver, imports, owner=None):
     source = imports/'library.sqlite3'
     target = data/'library.sqlite3'
     if source.is_file() and not target.exists():
-        with sqlite3.connect(f'file:{source}?mode=ro', uri=True) as old, sqlite3.connect(target) as new:
-            old.backup(new)
-            if new.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
-                raise ValueError('Imported library failed integrity check')
-        target.chmod(0o600)
+        # Only an offline SQLite backup belongs in /import. Immutable avoids WAL
+        # sidecar creation on the read-only bind mount; never use on a live DB.
+        pending = data/'library.sqlite3.importing'
+        old = sqlite3.connect(f'file:{source}?mode=ro&immutable=1', uri=True)
+        new = sqlite3.connect(pending)
+        try:
+            with new:
+                old.backup(new)
+                if new.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                    raise ValueError('Imported library failed integrity check')
+            new.execute('PRAGMA journal_mode=DELETE')
+        finally:
+            old.close()
+            new.close()
+        pending.chmod(0o600)
+        pending.replace(target)
     # Copy only a stopped TorrServer snapshot, never live BoltDB files.
     for name in ('config.db','settings.json'):
         source = imports/'TorrServer'/name

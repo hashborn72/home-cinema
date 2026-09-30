@@ -48,6 +48,7 @@ class StackTests(unittest.TestCase):
         with sqlite3.connect(self.imports/'library.sqlite3') as db:
             db.execute('CREATE TABLE example (id INTEGER)')
             db.execute('INSERT INTO example VALUES (42)')
+        db.close()
         self.init()
         self.assertEqual((self.data/'jackett-key').read_text(),'private-api')
         self.assertEqual((self.data/'tmdb-token').read_text(),'private-tmdb')
@@ -81,6 +82,18 @@ class StackTests(unittest.TestCase):
         (self.torr/'settings.json').write_text('{"CacheSize":67108864}')
         self.init()
         self.assertEqual(json.loads((self.torr/'settings.json').read_text())['CacheSize'],67108864)
+
+    def test_offline_wal_snapshot_import(self):
+        source=sqlite3.connect(self.imports/'library.sqlite3')
+        source.execute('PRAGMA journal_mode=WAL')
+        source.execute('CREATE TABLE example (id INTEGER)')
+        source.execute('INSERT INTO example VALUES (99)')
+        source.commit()
+        source.close()
+        self.init()
+        self.assertFalse((self.data/'library.sqlite3.importing').exists())
+        with sqlite3.connect(self.data/'library.sqlite3') as db:
+            self.assertEqual(db.execute('SELECT id FROM example').fetchone()[0],99)
 
     def test_public_endpoints_and_install_page(self):
         with patch.dict(os.environ, {'CINEMA_PUBLIC_URL':'http://192.168.1.144:8093','TORRSERVER_PUBLIC_URL':'http://192.168.1.144:8090'}):
