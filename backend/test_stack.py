@@ -70,6 +70,18 @@ class StackTests(unittest.TestCase):
             for link in ('http://evil/dl/rutor/','http://jackett:9117/config','http://jackett:9117/dl/exkinoray/'):
                 with self.assertRaises(ValueError): jackett_url(link,'rutor','new')
 
+    def test_import_torrserver_settings_once_without_reset(self):
+        folder=self.imports/'TorrServer'
+        folder.mkdir()
+        (folder/'settings.json').write_text('{"UseDisk":false,"CacheSize":134217728}')
+        (folder/'config.db').write_bytes(b'fixture-boltdb')
+        self.init()
+        self.assertEqual((self.torr/'config.db').read_bytes(),b'fixture-boltdb')
+        self.assertTrue((self.data/'torrserver-setup-v1').exists())
+        (self.torr/'settings.json').write_text('{"CacheSize":67108864}')
+        self.init()
+        self.assertEqual(json.loads((self.torr/'settings.json').read_text())['CacheSize'],67108864)
+
     def test_public_endpoints_and_install_page(self):
         with patch.dict(os.environ, {'CINEMA_PUBLIC_URL':'http://192.168.1.144:8093','TORRSERVER_PUBLIC_URL':'http://192.168.1.144:8090'}):
             client=TestClient(create_app(self.root/'app','test-token'))

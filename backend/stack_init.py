@@ -65,6 +65,18 @@ def initialize(data, jackett, torrserver, imports, owner=None):
             if new.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
                 raise ValueError('Imported library failed integrity check')
         target.chmod(0o600)
+    # Copy only a stopped TorrServer snapshot, never live BoltDB files.
+    for name in ('config.db','settings.json'):
+        source = imports/'TorrServer'/name
+        target = torrserver/name
+        if source.is_file() and not target.exists():
+            if name == 'settings.json':
+                if not isinstance(json.loads(source.read_text()), dict):
+                    raise ValueError('Invalid imported TorrServer settings')
+            target.write_bytes(source.read_bytes())
+            target.chmod(0o600)
+    if (imports/'TorrServer/settings.json').is_file() and not (data/'torrserver-setup-v1').exists():
+        private_write(data/'torrserver-setup-v1', 'Imported existing TorrServer settings\n')
     if owner is not None:
         for root in (data, jackett, torrserver):
             os.chown(root, *owner)
