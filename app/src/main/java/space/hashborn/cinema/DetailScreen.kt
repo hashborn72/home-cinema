@@ -1,6 +1,10 @@
 package space.hashborn.cinema
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.runtime.*
@@ -9,13 +13,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.*
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.tv.material3.*
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 @Composable
@@ -38,6 +48,12 @@ internal fun DetailScreen(card:JSONObject,state:DetailState,loading:Boolean,erro
     val series=card.optString("media_type")=="tv"
     val seasons=releases.mapNotNull{episodeRange(it.getString("title")).season}.distinct().sorted()
     val metadata=card.optJSONObject("metadata")
+    val description=metadata?.optString("description")?.takeUnless{it=="null" || it.isBlank()}
+        ?: "Описание пока не найдено. Видео доступно ниже."
+    var showDescription by remember(card.optString("id")) {mutableStateOf(false)}
+    var descriptionTruncated by remember(description) {mutableStateOf(false)}
+    var titleTruncated by remember(displayTitle(card)) {mutableStateOf(false)}
+    val descriptionFocus=remember {FocusRequester()}
     val requesters=remember {mutableMapOf<String,FocusRequester>()}
     val backFocus=remember {FocusRequester()}
     LaunchedEffect(Unit) {delay(120);runCatching {(requesters[state.selected] ?: backFocus).requestFocus()}}
@@ -60,11 +76,13 @@ internal fun DetailScreen(card:JSONObject,state:DetailState,loading:Boolean,erro
                 if(metadata?.optString("poster")?.startsWith("http")==true)
                     CinemaPoster(metadata.getString("poster"),Modifier.width(84.dp).height(122.dp))
                 Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(6.dp)) {
-                    Text(displayTitle(card),fontSize=27.sp,color=Color.White,maxLines=1,overflow=TextOverflow.Ellipsis)
+                    Text(displayTitle(card),fontSize=27.sp,color=Color.White,maxLines=1,overflow=TextOverflow.Ellipsis,
+                        onTextLayout={titleTruncated=it.hasVisualOverflow})
                     val rating=metadata?.optString("rating")?.takeUnless {it=="null" || it.isBlank()}
                     Text(cardSubtitle(card)+(rating?.let {" · ★ $it"} ?: ""),color=Color(0xFFA8B5C7),fontSize=14.sp)
-                    Text(metadata?.optString("description")?.takeUnless{it=="null" || it.isBlank()} ?: "Описание пока не найдено. Видео доступно ниже.",
-                        fontSize=16.sp,color=Color(0xFFA8B5C7),maxLines=3,overflow=TextOverflow.Ellipsis)
+                    Text(description,fontSize=16.sp,color=Color(0xFFA8B5C7),maxLines=3,overflow=TextOverflow.Ellipsis,
+                        onTextLayout={descriptionTruncated=it.hasVisualOverflow})
+                    if(descriptionTruncated || titleTruncated) CompactButton("Описание целиком",{showDescription=true},Modifier.focusRequester(descriptionFocus))
                 }
             }
         }
@@ -106,6 +124,53 @@ internal fun DetailScreen(card:JSONObject,state:DetailState,loading:Boolean,erro
                 }
             }
         }
+    }
+    if(showDescription) FullDescription(displayTitle(card),description) {showDescription=false}
+    LaunchedEffect(showDescription) {
+        if(!showDescription && (descriptionTruncated || titleTruncated)) {
+            delay(50)
+            runCatching {descriptionFocus.requestFocus()}
+        }
+    }
+}
+
+/** A separate reading surface keeps episode controls compact while making all text reachable on TV. */
+@Composable
+private fun FullDescription(title:String,description:String,onClose:()->Unit) {
+    val scroll=rememberScrollState()
+    val scope=rememberCoroutineScope()
+    val textFocus=remember {FocusRequester()}
+    val closeFocus=remember {FocusRequester()}
+    val step=with(LocalDensity.current) {96.dp.toPx()}
+    val height=(LocalConfiguration.current.screenHeightDp-48).coerceAtLeast(180).dp
+    Dialog(onDismissRequest=onClose,properties=DialogProperties(usePlatformDefaultWidth=false)) {
+        Column(Modifier.fillMaxWidth(0.9f).height(height).background(Color(0xFF101722)).padding(20.dp),
+            verticalArrangement=Arrangement.spacedBy(12.dp)) {
+            Row(horizontalArrangement=Arrangement.spacedBy(16.dp),verticalAlignment=Alignment.CenterVertically) {
+                CompactButton("← Закрыть",onClose,Modifier.focusRequester(closeFocus))
+                Text("↑ ↓ — читать · Назад — закрыть",fontSize=14.sp,color=Color(0xFFA8B5C7))
+            }
+            Column(Modifier.weight(1f).fillMaxWidth().focusRequester(textFocus).onPreviewKeyEvent {event ->
+                when(event.key) {
+                    Key.DirectionUp,Key.DirectionDown -> {
+                        if(event.type==KeyEventType.KeyDown) {
+                            if(event.key==Key.DirectionUp && scroll.value==0) closeFocus.requestFocus()
+                            else scope.launch {scroll.scrollBy(if(event.key==Key.DirectionDown) step else -step)}
+                        }
+                        true
+                    }
+                    Key.DirectionLeft -> {
+                        if(event.type==KeyEventType.KeyDown) closeFocus.requestFocus()
+                        true
+                    }
+                    else -> false
+                }
+            }.focusable().verticalScroll(scroll),verticalArrangement=Arrangement.spacedBy(14.dp)) {
+                Text(title,fontSize=27.sp,color=Color.White)
+                Text(description,fontSize=18.sp,lineHeight=26.sp,color=Color(0xFFD1D9E6))
+            }
+        }
+        LaunchedEffect(Unit) {delay(100);textFocus.requestFocus()}
     }
 }
 

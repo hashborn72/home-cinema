@@ -391,7 +391,8 @@ internal fun CinemaPoster(url:String,modifier:Modifier) {
     var state by remember(url) {mutableIntStateOf(0)}
     Box(modifier.background(Color(0xFF263244))) {
         if(state!=1) Text(if(state==2) "Постер временно недоступен" else "Загрузка постера…",modifier=Modifier.padding(16.dp),color=Muted,fontSize=13.sp)
-        AsyncImage(model=url,contentDescription=null,modifier=Modifier.fillMaxSize(),contentScale=ContentScale.Crop,
+        // Providers supply both portrait posters and landscape covers. Never crop either.
+        AsyncImage(model=url,contentDescription=null,modifier=Modifier.fillMaxSize(),contentScale=ContentScale.Fit,
             onSuccess={state=1},onError={state=2})
     }
 }
