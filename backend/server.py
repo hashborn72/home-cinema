@@ -174,7 +174,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'version': '0.9.3', 'environment': 'compose' if os.environ.get('CINEMA_STACK_SETUP') == '1' else 'development'}
+        return {'status': 'ok', 'version': '0.9.4', 'environment': 'compose' if os.environ.get('CINEMA_STACK_SETUP') == '1' else 'development'}
 
     @app.get('/api/v1/metadata/status', dependencies=[Depends(auth)])
     def metadata_status():return dict(metadata.status(),index_last_success=indexer.last_success,index_error=indexer.last_error)
@@ -191,12 +191,14 @@ def create_app(data_dir: Path, test_token: str | None = None):
         except KeyError:raise HTTPException(404,'No poster')
         except Exception:raise HTTPException(502,'Poster unavailable')
         with path.open('rb') as f:png=f.read(8)==b'\x89PNG\r\n\x1a\n'
-        return FileResponse(path,media_type='image/png' if png else 'image/jpeg',headers={'Cache-Control':'public, max-age=86400'})
+        return FileResponse(path,media_type='image/png' if png else 'image/jpeg',headers={'Cache-Control':'public, max-age=31536000, immutable' if v else 'public, max-age=86400'})
 
     @app.get('/api/v1/library', dependencies=[Depends(auth)])
     def get_library():
         response=library.shelves()
-        for shelf in response['shelves']: metadata.enrich(shelf['results'])
+        for shelf in response['shelves']:
+            metadata.prioritize(shelf['results'])
+            metadata.enrich(shelf['results'])
         return response
 
     @app.post('/api/v1/catalog/anwap-search', dependencies=[Depends(auth)])
@@ -263,7 +265,9 @@ def create_app(data_dir: Path, test_token: str | None = None):
     @app.get('/api/v1/catalog/home', dependencies=[Depends(auth)])
     def catalog_home():
         response=catalog.home()
-        for shelf in response['shelves']: metadata.enrich(shelf['results'])
+        for shelf in response['shelves']:
+            metadata.prioritize(shelf['results'])
+            metadata.enrich(shelf['results'])
         return response
 
     def provider_response(source,query,offset,start=False):
@@ -294,6 +298,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
         if len(q) > 200 or kind not in (None, 'movie', 'tv'):
             raise HTTPException(422, 'Invalid filter')
         response=catalog.search(q, kind)
+        metadata.prioritize(response['results'])
         metadata.enrich(response['results'])
         return response
 

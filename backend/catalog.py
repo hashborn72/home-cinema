@@ -15,7 +15,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from settings import jackett_url
 
-SOURCES = {'lostfilm': 'LostFilm — обновления сериалов', 'exkinoray': 'ExKinoRay — новые раздачи фильмов', 'rutor': 'RuTor — популярное среди последних раздач','anwap':'Anwap — новые фильмы'}
+SOURCES = {'lostfilm': 'LostFilm — обновления сериалов', 'exkinoray': 'ExKinoRay — новые раздачи фильмов', 'rutor': 'RuTor — популярное среди последних раздач','anwap':'Anwap — последние добавленные фильмы'}
 TTL = 600
 EPISODE = re.compile(r'(?i)\bS(\d{1,2})(?:E(\d{1,3}))?|\b(\d{1,2})x(\d{1,3})\b|(?:сезон[ыа]?|сери[яий])\s*\d')
 TECH = re.compile(r'(?i)(?<!\w)(?:\d{3,4}[pi]|BDRip|BDRemux|Blu[ -]?Ray|REMUX|WEB[ .-]?(?:DL(?:Rip)?|Rip)|WEBDL|HDRip|HDTV|DVDRip|DVD|UHD|HDR10?\+?|HEVC|AVC|x26[45]|H[ .]?26[45]|DUB|MVO|DVO|VO|AAC|DTS|FLAC|rus|eng|\d+(?:[.,]\d+)?\s*(?:GB|MB|ГБ|МБ))(?!\w)')

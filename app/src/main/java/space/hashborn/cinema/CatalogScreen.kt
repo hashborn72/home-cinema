@@ -35,7 +35,7 @@ import androidx.compose.ui.draw.alpha
 private val Ink = Color(0xFF101722)
 private val Muted = Color(0xFFA8B5C7)
 private fun JSONArray.objects() = (0 until length()).map { getJSONObject(it) }
-private fun JSONObject.optional(name: String) = if (isNull(name)) "" else optString(name)
+internal fun JSONObject.optional(name: String) = if (isNull(name)) "" else optString(name)
 internal fun displayTitle(card:JSONObject) = card.optJSONObject("metadata")?.optional("title")?.takeIf {it.isNotBlank()} ?: card.optString("provider_title").takeIf{it.isNotBlank()} ?: card.getString("title")
 internal fun cardSubtitle(card: JSONObject): String {
     val kind = if (card.optString("media_type") == "tv") "Сериал / ТВ" else "Фильм"
@@ -97,10 +97,13 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
     LaunchedEffect(section) {
         data = null
         if (section !in listOf("Поиск","Источники","Настройки")) refresh()
-        if (section == "Главная") while (isActive) { delay(10000); refresh() }
+        if (section !in listOf("Поиск","Источники","Настройки")) while (isActive) { delay(5000); refresh() }
     }
     LaunchedEffect(section,query) {
-        if (section == "Поиск") { delay(400); refresh() }
+        if (section == "Поиск") {
+            delay(400); refresh()
+            while(isActive) {delay(3000);refresh()}
+        }
     }
     LaunchedEffect(detail?.optString("id"),seriesAttempt) {
         val original=detail ?: return@LaunchedEffect
@@ -337,7 +340,7 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                             LazyRow(state=rowStates.getOrPut(row){androidx.compose.foundation.lazy.LazyListState()},horizontalArrangement=Arrangement.spacedBy(12.dp),contentPadding=PaddingValues(vertical=3.dp)) {
                                 items(cards,key={it.getString("id")}) { card ->
                                     val key=row+":"+card.getString("id")
-                                    CinemaCard(card,focusRequesters.getOrPut(key){FocusRequester()},landscape=row=="continue") {open(card,row)}
+                                    CinemaCard(card,focusRequesters.getOrPut(key){FocusRequester()},landscape=false) {open(card,row)}
                                 }
                             }
                         }

@@ -62,7 +62,7 @@ internal fun ProviderScreen(state:ProviderState,request:suspend(String)->JSONObj
             check(result.optString("status")=="ready")
             state.data=result;state.loadedKey=key;busy=false
             // Refresh cached metadata/posters without resetting focus or jumping back to the top.
-            while(isActive) {delay(15000);val fresh=request(getPath);if(fresh.optString("status")=="ready") state.data=fresh}
+            while(isActive) {delay(if(state.data?.optJSONArray("results")?.let {a -> (0 until a.length()).any {i -> a.getJSONObject(i).optJSONObject("metadata")?.optional("poster").isNullOrBlank()} }==true) 2000 else 30000);val fresh=request(getPath);if(fresh.optString("status")=="ready") state.data=fresh}
         } catch(e:TimeoutCancellationException) {error="Источник отвечает долго. Сохранённые карточки остаются доступны."}
         catch(e:CancellationException) {throw e}
         catch(e:Exception) {error="Источник временно недоступен"}

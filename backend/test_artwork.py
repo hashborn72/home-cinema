@@ -29,10 +29,10 @@ class ArtworkTests(unittest.TestCase):
         self.cat.ingest('exkinoray',[release('film','The Matrix (1999) WEB-DL',metadata={'provider':'Native','poster':self.url})])
         self.cid=self.cat.search()['results'][0]['id']
     def tearDown(self):self.temp.cleanup()
-    def seed(self,url,body):
+    def seed(self,url,body,refresh=False):
         original=httpx.Client
         with patch('metadata.httpx.Client',side_effect=lambda **kw:original(transport=httpx.MockTransport(lambda req:httpx.Response(200,content=body)))):
-            return self.meta._poster_url(url)
+            return self.meta._poster_url(url,refresh=refresh)
     def card(self):return self.meta.enrich([self.cat.detail(self.cid)])[0]
     def test_png_and_jpeg_dimensions_and_roles(self):
         self.assertEqual(dimensions(png()),(500,750))
@@ -71,7 +71,7 @@ class ArtworkTests(unittest.TestCase):
     def test_same_url_changed_bytes_get_new_version_after_refresh(self):
         self.seed(self.url,png());first=self.card()['metadata']['poster']
         with self.cat.db() as db:db.execute('UPDATE image_assets SET checked_at=0')
-        self.seed(self.url,png(400,600))
+        self.seed(self.url,png(400,600),refresh=True)
         self.assertNotEqual(first,self.card()['metadata']['poster'])
     def test_square_art_and_invalid_image_do_not_get_poster_urls(self):
         self.seed(self.url,png(300,300));self.assertIsNone(self.card()['metadata']['poster'])
@@ -82,12 +82,19 @@ class ArtworkTests(unittest.TestCase):
         with patch('metadata.httpx.Client',side_effect=AssertionError('Unexpected network')):
             self.assertEqual(self.meta._poster_url(self.url),path)
         self.assertIsNotNone(self.card()['metadata']['poster'])
+    def test_old_cached_image_is_served_without_network_on_repeated_views(self):
+        path=self.seed(self.url,png());version=self.card()['metadata']['poster']
+        with self.cat.db() as db:db.execute('UPDATE image_assets SET checked_at=0')
+        with patch('metadata.httpx.Client',side_effect=AssertionError('Unexpected download')):
+            self.assertEqual(self.meta.poster(self.cid),path)
+            self.assertEqual(self.meta.poster(self.cid),path)
+        self.assertEqual(self.card()['metadata']['poster'],version)
     def test_upstream_outage_retains_verified_cached_image_and_version(self):
         path=self.seed(self.url,png());version=self.card()['metadata']['poster']
         with self.cat.db() as db:db.execute('UPDATE image_assets SET checked_at=0')
         with patch('metadata.httpx.Client',side_effect=TimeoutError('unavailable')) as client:
-            self.assertEqual(self.meta._poster_url(self.url),path)
-            self.assertEqual(self.meta._poster_url(self.url),path)
+            self.assertEqual(self.meta._poster_url(self.url,refresh=True),path)
+            self.assertEqual(self.meta._poster_url(self.url,refresh=True),path)
             self.assertEqual(client.call_count,1)
         self.assertEqual(self.card()['metadata']['poster'],version)
     def test_upgrade_classifies_old_cache_without_network(self):

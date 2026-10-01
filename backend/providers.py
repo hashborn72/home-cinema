@@ -133,7 +133,12 @@ class Providers:
             if source=='lostfilm' and not cid:
                 cards,more=lostfilm_directory(query,offset)
                 with self.catalog.db() as db:
-                    for card in cards: db.execute('INSERT OR REPLACE INTO catalog_provider_items VALUES (?,?)',(card['id'],json.dumps(card)))
+                    for card in cards:
+                        old=db.execute('SELECT payload FROM catalog_provider_items WHERE id=?',(card['id'],)).fetchone()
+                        if old:
+                            previous=(json.loads(old[0]).get('metadata') or {})
+                            if previous.get('match')=='exact_source_page':card['metadata']=previous
+                        db.execute('INSERT OR REPLACE INTO catalog_provider_items VALUES (?,?)',(card['id'],json.dumps(card)))
                 result.update(results=cards,has_more=more,next_offset=offset+20)
             else:
                 if source=='anwap':

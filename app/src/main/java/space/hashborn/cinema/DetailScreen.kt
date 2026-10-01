@@ -64,7 +64,7 @@ internal fun DetailScreen(card:JSONObject,state:DetailState,loading:Boolean,erro
                 item {CompactButton("←",onBack,Modifier.focusRequester(backFocus).semantics {contentDescription="Назад"})}
                 if(series) {
                     item {CompactButton(if(state.season==null) "✓ Все сезоны" else "Все сезоны",{state.season=null})}
-                    items(seasons) {season -> CompactButton((if(state.season==season) "✓ " else "")+"Сезон $season",{state.season=season})}
+                    items(seasons) {season -> CompactButton((if(state.season==season) "✓ " else "")+"Сезон $season"+seasonYearLabel(card,season),{state.season=season})}
                 }
                 item {CompactButton(if(card.optJSONObject("library")?.optBoolean("favorite")==true) "♥" else "♡",onFavorite,
                     Modifier.semantics {contentDescription="Нравится"},enabled=!flagBusy)}
@@ -99,7 +99,7 @@ internal fun DetailScreen(card:JSONObject,state:DetailState,loading:Boolean,erro
                 .sortedWith(compareBy({it.first.season ?: Int.MAX_VALUE},{it.first.first ?: Int.MAX_VALUE},{it.first.last ?: Int.MAX_VALUE}))
             items(groups,key={it.first.toString()}) { (episode,rows) ->
                 Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp),modifier=Modifier.heightIn(min=42.dp)) {
-                    Text(episode.compactLabel(),color=Color.White,fontSize=16.sp,modifier=Modifier.width(156.dp),maxLines=2)
+                    Text(episode.compactLabel()+seasonYearLabel(card,episode.season),color=Color.White,fontSize=16.sp,modifier=Modifier.width(156.dp),maxLines=2)
                     LazyRow(horizontalArrangement=Arrangement.spacedBy(10.dp),contentPadding=PaddingValues(4.dp)) {
                         items(rows.sortedByDescending{qualityRank(it.optString("quality"))},key={it.getString("id")}) {release ->
                             val id=release.getString("id")
@@ -180,3 +180,9 @@ internal fun EpisodeRange.compactLabel():String = when {
     else -> "Сборники / без номера"
 }
 internal fun qualityRank(value:String):Int=Regex("(2160|1080|720|480)").find(value)?.value?.toIntOrNull() ?: 0
+
+internal fun seasonYearLabel(card:JSONObject,season:Int?):String {
+    if(season==null) return ""
+    val year=card.optJSONObject("metadata")?.optJSONObject("season_years")?.optional(season.toString()).orEmpty()
+    return if(year.isBlank()) "" else " · $year"
+}

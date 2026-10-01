@@ -1,7 +1,7 @@
 name: home-cinema
 
 x-backend: &backend-image
-  image: local/home-cinema-backend:0.9.3
+  image: local/home-cinema-backend:0.9.4
   build: ./backend
   pull_policy: build
 
@@ -94,6 +94,8 @@ services:
     volumes:
       - cinema-data:/data
       - ./dist:/releases:ro
+      # Reuse the existing tracker session for exact-page descriptions.
+      - jackett-config:/jackett:ro
     tmpfs:
       - /tmp:size=32m,mode=1777
     read_only: true
