@@ -8,6 +8,7 @@ from catalog import normal
 from urllib.parse import urlencode
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 BASE='https://mm.anwap.media'
 HEADERS={'User-Agent':'Mozilla/5.0 (compatible; HomeCinema/0.4)'}
@@ -73,6 +74,39 @@ def latest():
         rows.append(dict(parse_movie(html_page('/films/'+str(fid)),fid),source_rank=len(ids)-index))
     if not rows:raise ValueError('Empty or changed listing')
     return rows
+
+
+def latest_home(min_year=2020,limit=10,max_pages=5):
+    """Source order, filtered by premiere year; bounded pagination fills both media types."""
+    from anwap_series import series_ids,series_card
+    def collect(series):
+        found=[];seen=set();loaded=0;failed=0
+        def read(ref):
+            try:
+                body=html_page(('/serials/' if series else '/films/')+str(ref))
+                item=series_card(body,ref) if series else parse_movie(body,ref)
+                year=item.get('year') if series else int(re.search(r'\((\d{4})\)$',item['raw'])[1])
+                return item,year
+            except Exception:return None,None
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for page in range(1,max_pages+1):
+                path=('/serials/' if series else '/') if page==1 else ('/serials/p-' if series else '/films/p-')+str(page)
+                body=html_page(path)
+                ids=[i for i in (series_ids(body) if series else film_ids(body)) if i not in seen]
+                if not ids:break
+                seen.update(ids)
+                for item,year in pool.map(read,ids):
+                    if item is None:failed+=1;continue
+                    loaded+=1
+                    if year is not None and year>=min_year:found.append(item)
+                if len(found)>=limit:break
+                next_path=('/serials/p-' if series else '/films/p-')+str(page+1)
+                if not any(urlparse(a['href']).path==next_path for a in Page(body).links):break
+        if failed and not loaded:raise ValueError('Anwap detail pages unavailable')
+        return found[:limit]
+    movies=collect(False);series=collect(True)
+    for index,row in enumerate(movies):row['source_rank']=len(movies)-index
+    return movies,series
 
 def allowed_media(url):
     p=urlparse(url)

@@ -15,7 +15,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from settings import jackett_url
 
-SOURCES = {'lostfilm': 'LostFilm — обновления сериалов', 'exkinoray': 'ExKinoRay — новые раздачи фильмов', 'rutor': 'RuTor — популярное среди последних раздач','anwap':'Anwap — последние добавленные фильмы'}
+SOURCES = {'lostfilm': 'LostFilm — обновления сериалов', 'exkinoray': 'ExKinoRay — новые раздачи фильмов', 'rutor': 'RuTor — популярное среди последних раздач','anwap':'Anwap — последние фильмы и сериалы · 2020+'}
 TTL = 600
 EPISODE = re.compile(r'(?i)\bS(\d{1,2})(?:E(\d{1,3}))?|\b(\d{1,2})x(\d{1,3})\b|(?:сезон[ыа]?|сери[яий])\s*\d')
 TECH = re.compile(r'(?i)(?<!\w)(?:\d{3,4}[pi]|BDRip|BDRemux|Blu[ -]?Ray|REMUX|WEB[ .-]?(?:DL(?:Rip)?|Rip)|WEBDL|HDRip|HDTV|DVDRip|DVD|UHD|HDR10?\+?|HEVC|AVC|x26[45]|H[ .]?26[45]|DUB|MVO|DVO|VO|AAC|DTS|FLAC|rus|eng|\d+(?:[.,]\d+)?\s*(?:GB|MB|ГБ|МБ))(?!\w)')
@@ -118,6 +118,7 @@ class Catalog:
               CREATE TABLE IF NOT EXISTS catalog_sources(source TEXT PRIMARY KEY, fetched_at REAL NOT NULL DEFAULT 0, attempted_at REAL NOT NULL DEFAULT 0, error TEXT, received INTEGER NOT NULL DEFAULT 0);
               CREATE TABLE IF NOT EXISTS catalog_categories(url TEXT PRIMARY KEY, kind TEXT, checked_at REAL NOT NULL);
               CREATE TABLE IF NOT EXISTS catalog_provider_items(id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+              CREATE TABLE IF NOT EXISTS catalog_home_series(source TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(source,id));
             ''')
 
     @contextmanager
@@ -143,7 +144,7 @@ class Catalog:
                 db.execute('INSERT OR REPLACE INTO catalog_categories VALUES (?,?,?)',(url,kind,time.time()))
         return kind
 
-    def ingest(self, source, rows, update_shelf=True):
+    def ingest(self, source, rows, update_shelf=True, provider_cards=None):
         accepted = []
         for row in rows:
             cats = row['categories']
@@ -156,6 +157,11 @@ class Catalog:
             accepted.append(item)
         now = time.time()
         with self.db() as db:
+            if update_shelf and provider_cards is not None:
+                db.execute('DELETE FROM catalog_home_series WHERE source=?',(source,))
+                for card in provider_cards:
+                    db.execute('INSERT OR REPLACE INTO catalog_provider_items VALUES (?,?)',(card['id'],json.dumps(card,ensure_ascii=False)))
+                    db.execute('INSERT INTO catalog_home_series VALUES (?,?,?)',(source,card['id'],json.dumps(card,ensure_ascii=False)))
             # Persist existing catalogue records for history/deep links; shelf membership is a snapshot.
             for row in accepted:
                 old=db.execute('SELECT payload FROM catalog_releases WHERE id=?',(row['id'],)).fetchone()
@@ -175,8 +181,9 @@ class Catalog:
     def refresh(self, source):
         try:
             if source=='anwap':
-                from anwap import latest
-                self.ingest(source,latest())
+                from anwap import latest_home
+                movies,series=latest_home()
+                self.ingest(source,movies,provider_cards=series)
                 return
             key = (self.data_dir/'jackett-key').read_text().strip()
             params = {'apikey':key,'t':'search','limit':100}
@@ -237,6 +244,13 @@ class Catalog:
             selected = [r for r in releases if fetched and r['source']==source and r.get('seen_at')==fetched]
             cards = self.cards(selected)
             cards.sort(key=lambda r: (r['seeders'] or 0,r['published_at']) if source=='rutor' else (True,r.get('source_rank',0)) if source=='anwap' else ((r['media_type']=='movie') if source=='exkinoray' else True,r['published_at']),reverse=True)
+            if source=='anwap':
+                cards=[c for c in cards if (c.get('year') or 0)>=2020]
+                with self.db() as db:
+                    series=[json.loads(r[0]) for r in db.execute('SELECT payload FROM catalog_home_series WHERE source=? ORDER BY rowid',(source,))]
+                series=[c for c in series if (c.get('year') or 0)>=2020]
+                # The two source feeds have no comparable timestamps. Keep each feed's order.
+                cards=[items[i] for i in range(max(len(cards),len(series))) for items in (cards,series) if i<len(items)]
             shelves.append({'id':source,'title':title,'results':cards[:40], 'fetched_at':fetched,
                             'stale':bool(fetched and (time.time()-fetched>=TTL or state.get('error'))),
                             'warming':not bool(state),'error':state.get('error'),'received':state.get('received',0),

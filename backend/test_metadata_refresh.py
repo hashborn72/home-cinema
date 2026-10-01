@@ -35,6 +35,21 @@ class MetadataRefreshTests(unittest.TestCase):
         with patch.object(self.meta,'refresh_native') as native,patch.object(self.meta,'refresh') as refresh,patch.object(self.meta,'warm_artwork'):
             self.meta.process(self.card);self.meta.process(self.card)
             self.assertEqual(native.call_count,1);self.assertEqual(refresh.call_count,1)
+    def test_incomplete_card_retries_after_ten_minutes_but_complete_card_keeps_cache(self):
+        for complete,expected in ((False,2),(True,1)):
+            with self.subTest(complete=complete):
+                with self.cat.db() as db:db.execute('DELETE FROM metadata_checks')
+                with patch.object(self.meta,'complete',return_value=complete),patch.object(self.meta,'refresh_native'),patch.object(self.meta,'refresh') as refresh,patch.object(self.meta,'warm_artwork'):
+                    self.meta.process(self.card)
+                    with self.cat.db() as db:db.execute("UPDATE metadata_checks SET checked_at=checked_at-601 WHERE provider LIKE 'content-v4:%'")
+                    self.meta.process(self.card)
+                    self.assertEqual(refresh.call_count,expected)
+    def test_background_includes_cards_beyond_search_limit(self):
+        with self.cat.db() as db:
+            for index in range(250):
+                card=dict(self.card,id='directory-'+str(index))
+                db.execute('INSERT INTO catalog_provider_items VALUES (?,?)',(card['id'],json.dumps(card)))
+        self.assertEqual(len(self.meta.background_cards()),251)
     def test_one_card_failure_does_not_block_another(self):
         with patch.object(self.meta,'refresh_native'),patch.object(self.meta,'refresh',side_effect=[TimeoutError(),None]) as refresh,patch.object(self.meta,'warm_artwork'):
             self.meta.process(self.card)

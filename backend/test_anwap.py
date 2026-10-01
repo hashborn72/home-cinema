@@ -4,7 +4,7 @@ from anwap import parse_movie,film_ids,allowed_media,resolve
 import httpx
 import tempfile
 from pathlib import Path
-from anwap import Search,latest
+from anwap import Search,latest,latest_home
 from catalog import Catalog
 
 HTML='''<meta property="og:title" content="Example (2020)"><meta property="og:type" content="video.movie">
@@ -14,6 +14,36 @@ HTML='''<meta property="og:title" content="Example (2020)"><meta property="og:ty
 <a href="https://evil/films/load/abc/4/123">MP4</a><a href="/films/load/s/abc/3/123">MP4 sample</a>'''
 
 class AnwapTests(unittest.TestCase):
+    def test_home_paginates_and_filters_movies_and_series_since_2020(self):
+        def page(path):
+            if path=='/':return '<a href="/films/123">Old</a><a href="/films/p-2">Next</a>'
+            if path=='/films/p-2':return '<a href="/films/124">New</a><a href="/films/125">Newer</a>'
+            if path.startswith('/films/'):
+                fid=path.rsplit('/',1)[1]
+                return HTML.replace('/123','/'+fid).replace('(2020)','(1994)' if fid=='123' else '(2020)')
+            if path=='/serials/':return '<a href="/serials/1">Old</a><a href="/serials/p-2">Next</a>'
+            if path=='/serials/p-2':return '<a href="/serials/2">New</a>'
+            sid=path.rsplit('/',1)[1];year=2019 if sid=='1' else 2026
+            return f'<h1>Series {sid}</h1><meta property="og:url" content="https://mm.anwap.media/serials/{sid}"><a href="/serials/god-{year}">{year}</a>'
+        with patch('anwap.html_page',side_effect=page):movies,series=latest_home(limit=2)
+        self.assertEqual([m['film_id'] for m in movies],[124,125])
+        self.assertEqual([m['source_rank'] for m in movies],[2,1])
+        self.assertEqual([s['anwap_series_id'] for s in series],[2])
+    def test_home_series_snapshot_is_independent_of_search_and_expansion(self):
+        from anwap_series import series_card
+        from test_catalog import release
+        with tempfile.TemporaryDirectory() as tmp:
+            cat=Catalog(Path(tmp))
+            show=series_card('<h1>Series</h1><meta property="og:url" content="https://mm.anwap.media/serials/2"><a href="/serials/god-2026">2026</a>',2)
+            cat.ingest('anwap',[parse_movie(HTML,123)],provider_cards=[show])
+            shelf=cat.home()['shelves'][-1]['results']
+            self.assertEqual([c['media_type'] for c in shelf],['movie','tv'])
+            self.assertIsNotNone(cat.detail(show['id']))
+            cat.ingest('anwap',[release('old','Old (1994)',source='anwap')],False)
+            self.assertEqual([c['id'] for c in cat.home()['shelves'][-1]['results']],[c['id'] for c in shelf])
+            self.assertEqual(len(cat.search('Old')['results']),1)
+            with patch('anwap.latest_home',side_effect=TimeoutError()):cat.refresh('anwap')
+            self.assertEqual([c['id'] for c in cat.home()['shelves'][-1]['results']],[c['id'] for c in shelf])
     def test_latest_preserves_source_order_without_fake_timestamp(self):
         def page(path):
             if path=='/':return '<a href="/films/124">A</a><a href="/films/123">B</a>'

@@ -6,6 +6,7 @@ import threading
 import time
 import os
 import concurrent.futures
+from collections import deque
 from settings import public_url
 import hashlib
 from pathlib import Path
@@ -257,7 +258,8 @@ class Metadata:
         key='content-v4:'+revision
         with self.catalog.db() as db:
             check=db.execute('SELECT checked_at FROM metadata_checks WHERE content_id=? AND provider=?',(cid,key)).fetchone()
-        if check and time.time()-check[0]<7*86400:
+        ttl=7*86400 if self.complete(cid) else 600
+        if check and time.time()-check[0]<ttl:
             self.warm_artwork(cid)
             return
         failed=False
@@ -283,11 +285,30 @@ class Metadata:
                 db.execute("DELETE FROM metadata_checks WHERE content_id=? AND provider LIKE 'content-v4:%'",(cid,))
                 db.execute('INSERT OR REPLACE INTO metadata_checks VALUES (?,?,?)',(cid,key,time.time()))
 
+    def complete(self,cid):
+        meta,native=self._card_art(cid)
+        if not meta or not meta.get('description') or not meta.get('title'):return False
+        with self.catalog.db() as db:
+            for hint,url in self._candidates(meta,native):
+                asset=db.execute('SELECT width,height FROM image_assets WHERE url=?',(url,)).fetchone()
+                if asset and role(asset[0],asset[1],hint)=='poster':return True
+        return False
+
+    def background_cards(self):
+        cards={}
+        for shelf in self.catalog.home()['shelves']:
+            for card in shelf['results']:cards.setdefault(card['id'],card)
+        for card in self.catalog.cards(self.catalog.snapshot()[1]):cards.setdefault(card['id'],card)
+        with self.catalog.db() as db:
+            for row in db.execute('SELECT payload FROM catalog_provider_items'):
+                card=json.loads(row[0]);cards.setdefault(card['id'],card)
+        return list(cards.values())
+
     def start(self):
         def run():
             with concurrent.futures.ThreadPoolExecutor(max_workers=4,thread_name_prefix='metadata') as pool:
                 pending={}
-                background=[]
+                background=deque()
                 refill=0
                 while not self.stop_event.is_set():
                     for cid,future in list(pending.items()):
@@ -296,18 +317,14 @@ class Metadata:
                             except Exception:self.card_failures[cid]=time.time()+60
                             del pending[cid]
                     if not background and time.time()>=refill:
-                        cards={}
-                        for shelf in self.catalog.home()['shelves']:
-                            for card in shelf['results']:cards.setdefault(card['id'],card)
-                        for card in self.catalog.search()['results']:cards.setdefault(card['id'],card)
-                        background=list(cards.values());refill=time.time()+60
+                        background=deque(self.background_cards());refill=time.time()+60
                     while len(pending)<4:
                         with self.priority_lock:
-                            cid=next((k for k in self.priority if k not in pending),None)
+                            cid=next((k for k in self.priority if k not in pending),None) if len(pending)<3 or not background else None
                             card=self.priority.pop(cid) if cid else None
                         if card is None:
                             if not background:break
-                            card=background.pop(0)
+                            card=background.popleft()
                         if card['id'] in pending:continue
                         pending[card['id']]=pool.submit(self.process,card)
                     self.wake.wait(.2);self.wake.clear()
