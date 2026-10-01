@@ -11,7 +11,7 @@ from settings import public_url
 import hashlib
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
-from catalog import normal, fetch, lostfilm_slug
+from catalog import normal, fetch, lostfilm_slug, merge_native, native_matches_source
 import httpx
 from tmdb import TMDB
 from artwork import dimensions, role
@@ -101,8 +101,13 @@ class Metadata:
             native={r['id']:json.loads(r['payload']).get('metadata') for r in db.execute('SELECT * FROM catalog_provider_items')}
             assets={r['url']:dict(r) for r in db.execute('SELECT * FROM image_assets')}
         for card in cards:
-            source_meta=native.get(card['id']) or card.get('metadata')
-            cached=cache.get(card['id']) if card.get('match')!='unmatched' else None
+            # Directory jobs can retain a same-name remake after the release feed changes.
+            identity=self.catalog.detail(card['id']) or card if 'lostfilm' in card.get('sources',[]) else card
+            directory_meta=native.get(card['id'])
+            compatible=native_matches_source(identity,directory_meta)
+            current_meta=identity.get('metadata') if native_matches_source(identity,identity.get('metadata')) else None
+            source_meta=merge_native(current_meta,directory_meta if compatible else None)
+            cached=cache.get(card['id']) if card.get('match')!='unmatched' and compatible else None
             meta=self.choose(source_meta,cached)
             if not meta:
                 card['metadata']=None
@@ -140,7 +145,9 @@ class Metadata:
         if not card:raise KeyError(cid)
         with self.catalog.db() as db:
             row=db.execute('SELECT payload FROM metadata_cache WHERE content_id=?',(cid,)).fetchone()
-        cached=json.loads(row['payload']) if row and row['payload'] and card.get('match')!='unmatched' else None
+            entry=db.execute('SELECT payload FROM catalog_provider_items WHERE id=?',(cid,)).fetchone()
+        native=json.loads(entry['payload']).get('metadata') if entry else None
+        cached=json.loads(row['payload']) if row and row['payload'] and card.get('match')!='unmatched' and native_matches_source(card,native) else None
         return self.choose(card.get('metadata'),cached),card.get('metadata')
 
     def warm_artwork(self,cid,refresh=False):
@@ -179,7 +186,7 @@ class Metadata:
         p=urlparse(url)
         if not tracker_poster(url) and (p.scheme!='https' or p.netloc not in ('mm.anwap.media','static.tvmaze.com','image.tmdb.org','www.lostfilm.tv') or p.query or p.fragment):raise KeyError('Invalid poster')
         if p.netloc=='www.lostfilm.tv' and not re.fullmatch(r'/Static/Images/\d+/Posters/(?:image(?:_s\d+)?|poster)\.jpg',p.path):raise KeyError('Invalid poster')
-        if p.netloc=='mm.anwap.media' and not re.fullmatch(r'/(?:films/screen|serials/posts)/\d+\.jpg',p.path):raise KeyError('Invalid poster')
+        if p.netloc=='mm.anwap.media' and not re.fullmatch(r'/(?:films/screen|serials/(?:posts|screen))/\d+\.jpg',p.path):raise KeyError('Invalid poster')
         if p.netloc=='image.tmdb.org' and not re.fullmatch(r'/t/p/(?:w500|w780)/[A-Za-z0-9]+\.(?:jpg|png)',p.path):raise KeyError('Invalid poster')
         folder=self.catalog.data_dir/'posters';folder.mkdir(mode=0o700,exist_ok=True)
         path=folder/hashlib.sha256(url.encode()).hexdigest()
@@ -225,7 +232,13 @@ class Metadata:
                 old=db.execute('SELECT payload FROM catalog_provider_items WHERE id=?',(card['id'],)).fetchone()
                 entry=json.loads(old[0]) if old else dict(card)
                 previous=entry.get('metadata') or {}
-                entry['metadata']=dict(previous,**{k:v for k,v in native.items() if v not in (None,'',{},[])})
+                old_slug=lostfilm_slug(previous.get('url',''))
+                new_slug=lostfilm_slug(native.get('url',''))
+                if old_slug and new_slug and old_slug!=new_slug:
+                    # A changed exact series is a new identity even when the title-based ID collides.
+                    db.execute('DELETE FROM metadata_cache WHERE content_id=?',(card['id'],))
+                    entry=dict(card);previous={}
+                entry['metadata']=merge_native(previous,native)
                 db.execute('INSERT OR REPLACE INTO catalog_provider_items VALUES (?,?)',(card['id'],json.dumps(entry)))
         return native
 
@@ -255,7 +268,8 @@ class Metadata:
         detail=self.catalog.detail(cid) or card
         revision=hashlib.sha256(json.dumps([detail.get('source_slug'),detail.get('published_at'),
             sorted({r.get('season') for r in detail.get('releases',[]) if r.get('season') is not None})]).encode()).hexdigest()[:16]
-        key='content-v4:'+revision
+        # Re-evaluate source metadata after resolver changes; image/season cache stays valid.
+        key='content-v5:'+revision
         with self.catalog.db() as db:
             check=db.execute('SELECT checked_at FROM metadata_checks WHERE content_id=? AND provider=?',(cid,key)).fetchone()
         ttl=7*86400 if self.complete(cid) else 600
@@ -265,6 +279,8 @@ class Metadata:
         failed=False
         try:self.refresh_native(detail)
         except Exception:failed=True
+        # Publish the source cover while optional identity/translation lookup is still running.
+        self.warm_artwork(cid)
         # A provider error affects this card only; other visible cards keep moving.
         try:self.refresh(detail)
         except Exception:failed=True
@@ -273,7 +289,8 @@ class Metadata:
             sorted({r.get('season') for r in detail.get('releases',[]) if r.get('season') is not None})]).encode()).hexdigest()[:16]
         with self.catalog.db() as db:
             art_check=db.execute('SELECT checked_at FROM metadata_checks WHERE content_id=? AND provider=?',(cid,art_key)).fetchone()
-        self.warm_artwork(cid,refresh=art_check is None)
+            previous_art_check=db.execute("SELECT 1 FROM metadata_checks WHERE content_id=? AND provider LIKE 'season-art-v1:%' LIMIT 1",(cid,)).fetchone()
+        self.warm_artwork(cid,refresh=art_check is None and previous_art_check is not None)
         with self.catalog.db() as db:
             db.execute("DELETE FROM metadata_checks WHERE content_id=? AND provider LIKE 'season-art-v1:%'",(cid,))
             db.execute('INSERT OR REPLACE INTO metadata_checks VALUES (?,?,?)',(cid,art_key,time.time()))
@@ -282,7 +299,7 @@ class Metadata:
             self.last_error='Some metadata sources are unavailable; cached cards retained'
         else:
             with self.catalog.db() as db:
-                db.execute("DELETE FROM metadata_checks WHERE content_id=? AND provider LIKE 'content-v4:%'",(cid,))
+                db.execute("DELETE FROM metadata_checks WHERE content_id=? AND provider LIKE 'content-v%:%'",(cid,))
                 db.execute('INSERT OR REPLACE INTO metadata_checks VALUES (?,?,?)',(cid,key,time.time()))
 
     def complete(self,cid):

@@ -16,13 +16,14 @@ HEADERS={'User-Agent':'Mozilla/5.0 (compatible; HomeCinema/0.4)'}
 class Page(HTMLParser):
     def __init__(self,body):
         super().__init__(convert_charrefs=True)
-        self.meta={};self.links=[];self.anchor=None;self.heading='';self.in_heading=False
+        self.meta={};self.links=[];self.images=[];self.anchor=None;self.heading='';self.in_heading=False
         self.feed(body)
     def handle_starttag(self,tag,attrs):
         a=dict(attrs)
         if tag=='meta': self.meta[a.get('property',a.get('name',''))]=a.get('content','')
         if tag=='h1' and not self.heading: self.in_heading=True
         if tag=='a': self.anchor={'href':a.get('href',''),'text':''}
+        if tag=='img':self.images.append(a)
         if tag=='img' and self.anchor: self.anchor['image']=a.get('src','');self.anchor['alt']=a.get('alt','')
     def handle_data(self,data):
         if self.in_heading:self.heading+=data
@@ -93,6 +94,7 @@ def latest_home(min_year=2020,limit=10,max_pages=5):
                 path=('/serials/' if series else '/') if page==1 else ('/serials/p-' if series else '/films/p-')+str(page)
                 body=html_page(path)
                 ids=[i for i in (series_ids(body) if series else film_ids(body)) if i not in seen]
+                if page==1 and not ids:raise ValueError('Empty or changed Anwap listing')
                 if not ids:break
                 seen.update(ids)
                 for item,year in pool.map(read,ids):
@@ -102,7 +104,7 @@ def latest_home(min_year=2020,limit=10,max_pages=5):
                 if len(found)>=limit:break
                 next_path=('/serials/p-' if series else '/films/p-')+str(page+1)
                 if not any(urlparse(a['href']).path==next_path for a in Page(body).links):break
-        if failed and not loaded:raise ValueError('Anwap detail pages unavailable')
+        if failed and not found:raise ValueError('Anwap detail pages unavailable')
         return found[:limit]
     movies=collect(False);series=collect(True)
     for index,row in enumerate(movies):row['source_rank']=len(movies)-index

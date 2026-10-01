@@ -24,11 +24,29 @@ RUTOR_PATHS = {'/kino': 'movie', '/nashe_kino': 'movie', '/nauchno_popularnoe': 
 
 def digest(text): return hashlib.sha256(text.encode()).hexdigest()[:24]
 def normal(text): return re.sub(r'[^\w]+', ' ', text.casefold().replace('ё', 'е')).strip()
+def merge_native(base,incoming):
+    """Fresh nonempty fields win without discarding another source's usable cover."""
+    if not base:return incoming
+    if not incoming:return base
+    previous_slug=lostfilm_slug(base.get('url',''))
+    incoming_slug=lostfilm_slug(incoming.get('url',''))
+    if previous_slug and incoming_slug and previous_slug!=incoming_slug:
+        return dict(incoming)  # Same-name remakes must not share text, IDs or fallback artwork.
+    merged=dict(base,**{k:v for k,v in incoming.items() if v not in (None,'',{},[])})
+    covers=list(dict.fromkeys([u for item in (incoming,base) for u in [item.get('poster')]+item.get('poster_alternatives',[]) if u]))
+    alternatives=[u for u in covers if u!=merged.get('poster')]
+    if alternatives:merged['poster_alternatives']=alternatives
+    else:merged.pop('poster_alternatives',None)
+    return merged
 def lostfilm_slug(url):
     parsed=urllib.parse.urlparse(url)
     if parsed.hostname not in ('www.lostfilm.tv','lostfilm.tv'):return None
     parts=urllib.parse.unquote(parsed.path).split('/')
     return parts[2].strip() if len(parts)>2 and parts[1]=='series' and re.fullmatch(r'[A-Za-z0-9_-]+',parts[2].strip()) else None
+def native_matches_source(card,metadata):
+    selected=card.get('source_slug')
+    actual=lostfilm_slug((metadata or {}).get('url',''))
+    return not (selected and actual and selected!=actual)
 def number(value):
     try: return max(0, int(value))
     except (ValueError, TypeError): return None
@@ -176,7 +194,7 @@ class Catalog:
                     if 'source_rank' in prior:row['source_rank']=prior['source_rank']
                 db.execute('INSERT OR REPLACE INTO catalog_releases VALUES (?,?,?,?)',
                            (row['id'],source,row['content']['id'],json.dumps(row,ensure_ascii=False)))
-            if update_shelf:db.execute('INSERT OR REPLACE INTO catalog_sources VALUES (?,?,?,?,?)',(source,now,now,None,len(rows)))
+            if update_shelf:db.execute('INSERT OR REPLACE INTO catalog_sources VALUES (?,?,?,?,?)',(source,now,now,None,len(rows)+len(provider_cards or [])))
 
     def refresh(self, source):
         try:
@@ -227,8 +245,9 @@ class Catalog:
         for release in releases:
             content = release['content']
             card = groups.setdefault(content['id'],dict(content,release_count=0,seeders=None,published_at=0,sources=[]))
+            card['aliases']=list(dict.fromkeys(card.get('aliases',[])+content.get('aliases',[])+([content['title']] if content['title']!=card['title'] else [])))
             card['release_count'] += 1
-            if content.get('metadata'):card['metadata']=content['metadata']
+            if content.get('metadata'):card['metadata']=merge_native(card.get('metadata'),content['metadata'])
             if release['seeders'] is not None: card['seeders'] = max(card['seeders'] or 0,release['seeders'])
             card['published_at'] = max(card['published_at'],release['published_at'])
             if release.get('source_rank') is not None:card['source_rank']=max(card.get('source_rank',0),release['source_rank'])
@@ -291,7 +310,9 @@ class Catalog:
         if source_slug:card['source_slug']=source_slug
         if entry:
             directory=json.loads(entry['payload'])
-            card['provider_title']=directory.get('provider_title',card['title'])
-            card.setdefault('metadata',directory.get('metadata'))
+            if native_matches_source(card,directory.get('metadata')):
+                card['provider_title']=directory.get('provider_title',card['title'])
+                card['metadata']=merge_native(card.get('metadata'),directory.get('metadata'))
+                card['aliases']=list(dict.fromkeys(card.get('aliases',[])+directory.get('aliases',[])))
         card['releases'] = [dict(id=r['id'],source=r['source'],title=r['raw'],kind='direct' if r['source']=='anwap' else 'torrent',seeders=r['seeders'],size=r['size'],published_at=r['published_at'],quality=r['content']['quality'],season=r['content']['season'],episode=r['content']['episode']) for r in sorted(releases,key=lambda r:(r['published_at'],r['seeders'] or 0),reverse=True)]
         return card

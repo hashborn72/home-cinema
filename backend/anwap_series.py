@@ -1,5 +1,6 @@
 """Anwap series directory and explicit episode pages, using only fixed source paths."""
 import re
+from urllib.parse import urljoin
 from catalog import digest
 from anwap import BASE, Page, html_page
 
@@ -13,11 +14,14 @@ def series_card(body, sid):
     if page.meta.get('og:url')!=BASE+'/serials/'+str(sid) or not title:raise ValueError('Not a series')
     original=re.search(r' / (.+?) на телефон',page.meta.get('og:title',''))
     year=next((int(m[1]) for a in page.links if (m:=re.fullmatch(r'/serials/god-((?:19|20)\d{2})',a['href']))),None)
+    poster=next((urljoin(BASE,image.get('src','')) for image in page.images
+                 if 'filmscreen' in image.get('class','').split()
+                 and urljoin(BASE,image.get('src',''))==BASE+'/serials/screen/'+str(sid)+'.jpg'),None)
     return dict(id=digest('anwap:series:'+str(sid)),title=title,aliases=[original[1]] if original else [],year=year,
                 media_type='tv',match='source_series_id',season=None,episode=None,quality=None,
                 release_count=0,seeders=None,published_at=0,sources=['anwap'],directory=True,anwap_series_id=sid,
                 metadata={'provider':'Anwap','url':BASE+'/serials/'+str(sid),'title':title,
-                          'poster':BASE+'/serials/posts/'+str(sid)+'.jpg','description':page.meta.get('og:desc',''),
+                          'poster':poster,'description':page.meta.get('og:desc',''),'premiere_year':year,
                           'language':'ru','license':'','rating':None})
 
 

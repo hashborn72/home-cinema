@@ -28,6 +28,11 @@ class MetadataRefreshTests(unittest.TestCase):
     def test_season_years_follow_provider_numbering(self):
         years=season_years('<h2>12 сезон</h2>Скоро<h2>11 сезон</h2>Год: 2026<div><h2>10 сезон</h2>Год: 2013<div>')
         self.assertEqual(years,{'11':'2026','10':'2013'})
+    def test_tracker_preserves_exact_kinopoisk_id_without_using_host_lookalikes(self):
+        for link,expected in [('https://www.kinopoisk.ru/film/12345/','12345'),('https://kinopoisk.ru/series/67890','67890'),('http://www.kinopoisk.ru/level/1/film//12345','12345'),('https://kinopoisk.ru/film/12345evil',None),('https://kinopoisk.ru.evil.test/film/12345/',None)]:
+            with self.subTest(link=link):
+                meta=parse_tracker('<a href="'+link+'">KP</a>',self.card,'https://rutor.info/torrent/1')
+                self.assertEqual(meta['kinopoisk_id'],expected)
     def test_native_russian_text_fills_tmdb_gaps(self):
         meta=self.meta.choose({'title':'Неведомая Япония','description':'Природа Японии','season_years':{'1':'2020'}},{'provider':'TMDB','title':'Hidden Japan','description':'','poster':'x'})
         self.assertEqual(meta['title'],'Неведомая Япония');self.assertEqual(meta['description'],'Природа Японии');self.assertEqual(meta['poster'],'x')
@@ -41,7 +46,7 @@ class MetadataRefreshTests(unittest.TestCase):
                 with self.cat.db() as db:db.execute('DELETE FROM metadata_checks')
                 with patch.object(self.meta,'complete',return_value=complete),patch.object(self.meta,'refresh_native'),patch.object(self.meta,'refresh') as refresh,patch.object(self.meta,'warm_artwork'):
                     self.meta.process(self.card)
-                    with self.cat.db() as db:db.execute("UPDATE metadata_checks SET checked_at=checked_at-601 WHERE provider LIKE 'content-v4:%'")
+                    with self.cat.db() as db:db.execute("UPDATE metadata_checks SET checked_at=checked_at-601 WHERE provider LIKE 'content-v5:%'")
                     self.meta.process(self.card)
                     self.assertEqual(refresh.call_count,expected)
     def test_background_includes_cards_beyond_search_limit(self):
@@ -50,6 +55,25 @@ class MetadataRefreshTests(unittest.TestCase):
                 card=dict(self.card,id='directory-'+str(index))
                 db.execute('INSERT INTO catalog_provider_items VALUES (?,?)',(card['id'],json.dumps(card)))
         self.assertEqual(len(self.meta.background_cards()),251)
+    def test_resolver_upgrade_rechecks_metadata_once_without_redownloading_art(self):
+        with patch.object(self.meta,'refresh_native'),patch.object(self.meta,'refresh') as refresh,patch.object(self.meta,'warm_artwork') as warm:
+            self.meta.process(self.card)
+            with self.cat.db() as db:
+                db.execute("UPDATE metadata_checks SET provider=replace(provider,'content-v5:','content-v4:') WHERE provider LIKE 'content-v5:%'")
+            refresh.reset_mock();warm.reset_mock()
+            self.meta.process(self.card);self.meta.process(self.card)
+            self.assertEqual(refresh.call_count,1)
+            self.assertFalse(any(call.kwargs.get('refresh') for call in warm.call_args_list))
+            with self.cat.db() as db:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM metadata_checks WHERE provider LIKE 'content-v4:%'").fetchone()[0],0)
+    def test_first_lookup_reuses_just_warmed_art_but_changed_season_refreshes(self):
+        with patch.object(self.meta,'refresh_native'),patch.object(self.meta,'refresh'),patch.object(self.meta,'warm_artwork') as warm:
+            self.meta.process(self.card)
+            self.assertFalse(any(call.kwargs.get('refresh') for call in warm.call_args_list))
+            warm.reset_mock()
+            self.cat.ingest('lostfilm',[dict(release('next','Dark Matter S03E01',source='lostfilm',cats=[5000]),details='https://www.lostfilm.tv/series/Dark_Matter_2024/season_3/episode_1/')])
+            self.meta.process(self.card)
+            self.assertEqual(sum(bool(call.kwargs.get('refresh')) for call in warm.call_args_list),1)
     def test_one_card_failure_does_not_block_another(self):
         with patch.object(self.meta,'refresh_native'),patch.object(self.meta,'refresh',side_effect=[TimeoutError(),None]) as refresh,patch.object(self.meta,'warm_artwork'):
             self.meta.process(self.card)
