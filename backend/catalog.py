@@ -15,7 +15,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from settings import jackett_url
 
-SOURCES = {'lostfilm': 'LostFilm — новые сериалы', 'exkinoray': 'ExKinoRay — новые раздачи фильмов', 'rutor': 'RuTor — популярное','anwap':'Anwap — новые фильмы'}
+SOURCES = {'lostfilm': 'LostFilm — обновления сериалов', 'exkinoray': 'ExKinoRay — новые раздачи фильмов', 'rutor': 'RuTor — популярное среди последних раздач','anwap':'Anwap — новые фильмы'}
 TTL = 600
 EPISODE = re.compile(r'(?i)\bS(\d{1,2})(?:E(\d{1,3}))?|\b(\d{1,2})x(\d{1,3})\b|(?:сезон[ыа]?|сери[яий])\s*\d')
 TECH = re.compile(r'(?i)(?<!\w)(?:\d{3,4}[pi]|BDRip|BDRemux|Blu[ -]?Ray|REMUX|WEB[ .-]?(?:DL(?:Rip)?|Rip)|WEBDL|HDRip|HDTV|DVDRip|DVD|UHD|HDR10?\+?|HEVC|AVC|x26[45]|H[ .]?26[45]|DUB|MVO|DVO|VO|AAC|DTS|FLAC|rus|eng|\d+(?:[.,]\d+)?\s*(?:GB|MB|ГБ|МБ))(?!\w)')
@@ -158,10 +158,14 @@ class Catalog:
         with self.db() as db:
             # Persist existing catalogue records for history/deep links; shelf membership is a snapshot.
             for row in accepted:
+                old=db.execute('SELECT payload FROM catalog_releases WHERE id=?',(row['id'],)).fetchone()
+                prior=json.loads(old['payload']) if old else {}
+                # Release publication, discovery and source checking are separate clocks.
+                # Unknown legacy discovery times stay unknown, not "new today".
+                row['first_seen_at']=prior.get('first_seen_at') if old else now
+                row['last_checked_at']=now
                 row['seen_at'] = now
                 if not update_shelf:
-                    old=db.execute('SELECT payload FROM catalog_releases WHERE id=?',(row['id'],)).fetchone()
-                    prior=json.loads(old['payload']) if old else {}
                     row['seen_at']=prior.get('seen_at',0)
                     if 'source_rank' in prior:row['source_rank']=prior['source_rank']
                 db.execute('INSERT OR REPLACE INTO catalog_releases VALUES (?,?,?,?)',

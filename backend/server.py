@@ -4,6 +4,7 @@ import html
 import hmac
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import sqlite3
@@ -173,7 +174,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'version': '0.9.0', 'environment': 'compose' if os.environ.get('CINEMA_STACK_SETUP') == '1' else 'development'}
+        return {'status': 'ok', 'version': '0.9.2', 'environment': 'compose' if os.environ.get('CINEMA_STACK_SETUP') == '1' else 'development'}
 
     @app.get('/api/v1/metadata/status', dependencies=[Depends(auth)])
     def metadata_status():return dict(metadata.status(),index_last_success=indexer.last_success,index_error=indexer.last_error)
@@ -182,9 +183,11 @@ def create_app(data_dir: Path, test_token: str | None = None):
     async def play_stream(ticket: str,request:Request):return await streams.stream(ticket,request)
 
     @app.get('/images/{content_id}')
-    def image(content_id: str):
+    def image(content_id: str,kind: str='poster',v: str | None=None):
         # Fixed catalog images only, not an arbitrary URL or filesystem proxy.
-        try:path=metadata.poster(content_id)
+        if kind not in ('poster','backdrop','episode_still') or (v is not None and not re.fullmatch(r'[a-f0-9]{20}',v)):
+            raise HTTPException(422,'Invalid image variant')
+        try:path=metadata.poster(content_id,kind,v)
         except KeyError:raise HTTPException(404,'No poster')
         except Exception:raise HTTPException(502,'Poster unavailable')
         with path.open('rb') as f:png=f.read(8)==b'\x89PNG\r\n\x1a\n'

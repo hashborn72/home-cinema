@@ -31,6 +31,11 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 
 private val Ink = Color(0xFF101722)
 private val Muted = Color(0xFFA8B5C7)
@@ -328,7 +333,7 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                                 row=="anwap" -> "Прямое видео · доступное разрешение указано при выборе"
                                 else -> "Последние доступные раздачи · одинаковые качества сгруппированы"
                             }
-                            if(shelf.optBoolean("stale") || shelf.optBoolean("warming")) Text(note,color=Muted,fontSize=12.sp)
+                            if(row=="rutor" || shelf.optBoolean("stale") || shelf.optBoolean("warming")) Text(note,color=Muted,fontSize=12.sp)
                         }
                         val cards=shelf.getJSONArray("results").objects()
                         item(key=row+"-cards") {
@@ -336,7 +341,7 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                             LazyRow(state=rowStates.getOrPut(row){androidx.compose.foundation.lazy.LazyListState()},horizontalArrangement=Arrangement.spacedBy(12.dp),contentPadding=PaddingValues(vertical=3.dp)) {
                                 items(cards,key={it.getString("id")}) { card ->
                                     val key=row+":"+card.getString("id")
-                                    CinemaCard(card,focusRequesters.getOrPut(key){FocusRequester()}) {open(card,row)}
+                                    CinemaCard(card,focusRequesters.getOrPut(key){FocusRequester()},landscape=row=="continue") {open(card,row)}
                                 }
                             }
                         }
@@ -366,33 +371,39 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
 }
 
 @Composable
-internal fun CinemaCard(card:JSONObject,requester:FocusRequester,onClick:()->Unit) {
+internal fun CinemaCard(card:JSONObject,requester:FocusRequester,landscape:Boolean=false,onClick:()->Unit) {
     val width=((LocalConfiguration.current.screenWidthDp-56-48)/5f).dp
-    Surface(onClick=onClick,modifier=Modifier.width(width).height(188.dp).focusRequester(requester),
+    Surface(onClick=onClick,modifier=Modifier.width(width).focusRequester(requester),
         colors=ClickableSurfaceDefaults.colors(containerColor=Color.Transparent,focusedContainerColor=Color.Transparent,
             contentColor=Color.White,focusedContentColor=Color.White),
         scale=ClickableSurfaceDefaults.scale(focusedScale=1.025f),
-        border=ClickableSurfaceDefaults.border(focusedBorder=Border(BorderStroke(2.dp,Color(0xFF5EEAD4))))) {
-        Column(verticalArrangement=Arrangement.spacedBy(3.dp)) {
-            val poster=card.optJSONObject("metadata")?.optional("poster")
-            if(!poster.isNullOrEmpty()) CinemaPoster(poster,Modifier.fillMaxWidth().height(128.dp))
-            else Box(Modifier.fillMaxWidth().height(128.dp).background(Color(0xFF263244))) {
-                Text(displayTitle(card),modifier=Modifier.padding(10.dp),color=Muted,fontSize=16.sp,maxLines=4)
-            }
-            Text(displayTitle(card),fontSize=17.sp,maxLines=2,overflow=TextOverflow.Ellipsis,lineHeight=19.sp)
+        border=ClickableSurfaceDefaults.border(focusedBorder=Border(BorderStroke(2.dp,Color(0xFF78DCF4))))) {
+        Column(verticalArrangement=Arrangement.spacedBy(5.dp)) {
+            val meta=card.optJSONObject("metadata")
+            val poster=if(landscape) meta?.optional("episode_still")?.takeIf{it.isNotEmpty()} ?: meta?.optional("backdrop") else meta?.optional("poster")
+            CinemaPoster(poster.orEmpty(),Modifier.fillMaxWidth().aspectRatio(if(landscape) 16f/9f else 2f/3f).clip(RoundedCornerShape(6.dp)),displayTitle(card),landscape)
+            Text(displayTitle(card),fontSize=17.sp,minLines=2,maxLines=2,overflow=TextOverflow.Ellipsis,lineHeight=20.sp)
             val year=card.optional("year").ifEmpty {card.optJSONObject("metadata")?.optional("year") ?: ""}
-            if(year.isNotEmpty()) Text(year,fontSize=12.sp,color=Muted)
+            val sources=card.optJSONArray("sources")?.let {a -> (0 until a.length()).joinToString(" · "){providerName(a.getString(it))}}.orEmpty()
+            Text(listOf(year,sources).filter{it.isNotBlank()}.joinToString(" · "),fontSize=12.sp,color=Muted,maxLines=1,overflow=TextOverflow.Ellipsis)
         }
     }
 }
 
 @Composable
-internal fun CinemaPoster(url:String,modifier:Modifier) {
+internal fun CinemaPoster(url:String,modifier:Modifier,title:String="",landscape:Boolean=false) {
     var state by remember(url) {mutableIntStateOf(0)}
-    Box(modifier.background(Color(0xFF263244))) {
-        if(state!=1) Text(if(state==2) "Постер временно недоступен" else "Загрузка постера…",modifier=Modifier.padding(16.dp),color=Muted,fontSize=13.sp)
-        // Providers supply both portrait posters and landscape covers. Never crop either.
-        AsyncImage(model=url,contentDescription=null,modifier=Modifier.fillMaxSize(),contentScale=ContentScale.Fit,
-            onSuccess={state=1},onError={state=2})
+    Box(modifier.background(Brush.linearGradient(listOf(Color(0xFF263D51),Color(0xFF121E2C))))) {
+        if(state!=1) Column(Modifier.fillMaxSize().padding(12.dp),verticalArrangement=Arrangement.SpaceBetween) {
+            Text("HOME CINEMA",color=Muted,fontSize=9.sp,letterSpacing=1.sp)
+            Text(title,color=Color(0xFFEEF5FB),fontSize=19.sp,lineHeight=23.sp,maxLines=4,overflow=TextOverflow.Ellipsis)
+            Text(if(state==2) "Изображение недоступно" else "Постер уточняется",color=Muted,fontSize=11.sp)
+        }
+        if(url.isNotBlank()) AsyncImage(model=url,contentDescription=null,
+            modifier=Modifier.fillMaxSize().alpha(if(state==1) 1f else 0f),contentScale=ContentScale.Fit,
+            onSuccess={result ->
+                val image=result.result.drawable
+                state=if(artworkFits(image.intrinsicWidth,image.intrinsicHeight,landscape)) 1 else 2
+            },onError={state=2})
     }
 }

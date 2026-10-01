@@ -98,6 +98,8 @@ class TMDBTests(unittest.TestCase):
         def poster(url):
             calls.append(url)
             if 'image.tmdb.org' in url:raise TimeoutError()
+            from test_artwork import png
+            meta._record_image(url,png())
             return Path('cached-native')
         with patch.object(meta,'_poster_url',side_effect=poster):
             self.assertEqual(meta.poster(card['id']),Path('cached-native'))
@@ -109,7 +111,8 @@ class TMDBTests(unittest.TestCase):
         meta=Metadata(Catalog(self.root));original=httpx.Client
         def handle(req):
             self.assertNotIn('authorization',req.headers)
-            return httpx.Response(200,content=b'\xff\xd8\xfftest')
+            from test_artwork import png
+            return httpx.Response(200,content=png())
         with patch('metadata.httpx.Client',side_effect=lambda **kw:original(transport=httpx.MockTransport(handle))):
             path=meta._poster_url('https://image.tmdb.org/t/p/w500/p.jpg')
         self.assertTrue(path.is_file())

@@ -9,7 +9,7 @@ NOTICE = 'This product uses the TMDB API but is not endorsed or certified by TMD
 
 def match(card, results):
     kind = card['media_type']
-    if kind not in ('movie', 'tv') or card.get('confidence') == 'unmatched':
+    if kind not in ('movie', 'tv') or card.get('match', card.get('confidence')) == 'unmatched':
         return None
     names = {normal(n) for n in [card['title']] + card.get('aliases', [])}
     matches = {}
@@ -53,7 +53,7 @@ class TMDB:
         return json.loads(body)
 
     def lookup(self, card):
-        if card['media_type'] not in ('movie', 'tv') or card.get('confidence') == 'unmatched':
+        if card['media_type'] not in ('movie', 'tv') or card.get('match', card.get('confidence')) == 'unmatched':
             return None
         results = []
         for name in list(dict.fromkeys([card['title']] + card.get('aliases', [])))[:3]:
@@ -75,11 +75,14 @@ class TMDB:
             self.image_base = cfg['secure_base_url'] + 'w500'
         path = item.get('poster_path') or ''
         poster = self.image_base + path if re.fullmatch(r'/[A-Za-z0-9]+\.(?:jpg|png)', path) else None
+        backdrop_path = item.get('backdrop_path') or ''
+        backdrop = 'https://image.tmdb.org/t/p/w780' + backdrop_path if re.fullmatch(r'/[A-Za-z0-9]+\.(?:jpg|png)', backdrop_path) else None
         rating = item.get('vote_average') if item.get('vote_count', 0) > 0 else None
         return {'provider': 'TMDB', 'provider_id': item['id'],
                 'url': 'https://www.themoviedb.org/' + card['media_type'] + '/' + str(item['id']),
                 'title': item.get('title') or item.get('name'), 'description': (item.get('overview') or '')[:6000],
                 'original_title': item.get('original_title') or item.get('original_name'),
                 'year': (item.get('release_date') or item.get('first_air_date') or '')[:4],
-                'poster': poster, 'rating': rating, 'language': 'ru-RU', 'license': NOTICE,
+                'poster': poster, 'backdrop': backdrop, 'episode_still': None,
+                'rating': rating, 'language': 'ru-RU', 'license': NOTICE,
                 'match': 'unique_exact_title_year' if card['media_type'] == 'movie' else 'unique_exact_title'}
