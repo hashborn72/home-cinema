@@ -190,8 +190,9 @@ def create_app(data_dir: Path, test_token: str | None = None):
         try:path=metadata.poster(content_id,kind,v)
         except KeyError:raise HTTPException(404,'No poster')
         except Exception:raise HTTPException(502,'Poster unavailable')
-        with path.open('rb') as f:png=f.read(8)==b'\x89PNG\r\n\x1a\n'
-        return FileResponse(path,media_type='image/png' if png else 'image/jpeg',headers={'Cache-Control':'public, max-age=31536000, immutable' if v else 'public, max-age=86400'})
+        with path.open('rb') as f:header=f.read(12)
+        mime='image/webp' if header[:4]==b'RIFF' and header[8:12]==b'WEBP' else 'image/png' if header[:8]==b'\x89PNG\r\n\x1a\n' else 'image/jpeg'
+        return FileResponse(path,media_type=mime,headers={'Cache-Control':'public, max-age=31536000, immutable' if v else 'public, max-age=86400'})
 
     @app.get('/api/v1/library', dependencies=[Depends(auth)])
     def get_library():

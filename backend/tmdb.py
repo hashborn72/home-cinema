@@ -63,6 +63,8 @@ class TMDB:
             params = {'query': name, 'language': 'ru-RU', 'include_adult': 'false', 'page': 1}
             if card['media_type'] == 'movie' and card.get('year'):
                 params['primary_release_year'] = card['year']
+            if card['media_type']=='tv' and (card.get('metadata') or {}).get('premiere_year'):
+                params['first_air_date_year']=card['metadata']['premiere_year']
             response = self.request('/search/' + card['media_type'], params)
             # Do not call a result unique when uninspected candidates remain.
             if response.get('total_pages', 1) > 1:

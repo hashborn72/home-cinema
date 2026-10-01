@@ -36,9 +36,23 @@ def season_years(body):
 def parse_tracker(body, card, url):
     description = re.search(r'(?is)<b>\s*(?:Описание|О фильме|О сериале)\s*:?</b>\s*:?(.*?)(?=<b>|<div|\Z)', body)
     imdb = re.search(r'https?://(?:www\.)?imdb\.com/title/(tt\d+)/', body)
+    # The cover precedes the release description; screenshots follow it.
+    prefix=body[:description.start()] if description else re.split(r'(?i)Скриншоты|Screenshots',body,maxsplit=1)[0]
+    images=re.findall(r'''<img\b[^>]*\bsrc=["'](https://[^"']+)["']''',prefix,re.I)
+    poster=next((html.unescape(u) for u in images if tracker_poster(u)),None)
     return {'provider': 'ExKinoRay' if 'exkinoray' in urlparse(url).hostname else 'RuTor',
             'url': url, 'title': card['title'], 'description': plain(description[1])[:6000] if description else '',
-            'imdb_id': imdb[1] if imdb else None, 'language': 'ru', 'match': 'exact_source_page'}
+            'imdb_id': imdb[1] if imdb else None, 'poster':poster, 'language': 'ru', 'match': 'exact_source_page'}
+
+
+def tracker_poster(url):
+    p=urlparse(url)
+    if p.scheme!='https' or p.query or p.fragment or p.username or p.port is not None:return False
+    if re.fullmatch(r'i\d+\.fastpic\.org',p.netloc):
+        return bool(re.fullmatch(r'/big/\d{4}/\d{4}/[a-f0-9]{2}/[a-f0-9]+\.(?:jpg|jpeg|png|webp)',p.path))
+    if p.netloc=='lostpix.com':
+        return bool(re.fullmatch(r'/img/\d{4}-\d{2}/\d{2}/[a-z0-9]+\.(?:jpg|jpeg|png|webp)',p.path))
+    return False
 
 
 def lookup(catalog, card):
@@ -56,12 +70,21 @@ def lookup(catalog, card):
             meta['season_years'] = season_years(fetch(url+'seasons/', timeout=8, limit=2_000_000).decode('utf-8', 'replace'))
         except Exception: pass
         return meta
-    for row in rows[:1]:
+    tracker_meta=None
+    for row in rows[:3]:
         p = urlparse(row.get('details', ''))
         if p.scheme not in ('http', 'https') or p.port not in (None, 80, 443) or p.username: return None
         if source == 'rutor' and p.hostname in ('rutor.info', 'rutor.is') and p.path.startswith('/torrent/'):
             url = 'https://'+p.hostname+p.path
-            return parse_tracker(fetch(url, timeout=8, limit=2_000_000).decode('utf-8', 'replace'), card, url)
+            try:current=parse_tracker(fetch(url, timeout=8, limit=2_000_000).decode('utf-8', 'replace'), card, url)
+            except Exception:
+                if tracker_meta:continue
+                raise
+            if tracker_meta is None:tracker_meta=current
+            if current.get('poster') and current['poster']!=tracker_meta.get('poster'):
+                tracker_meta.setdefault('poster_alternatives',[]).append(current['poster'])
+            if current.get('imdb_id'):tracker_meta['imdb_id']=current['imdb_id']
+            if current.get('poster') and 'fastpic.org' not in current['poster']:break
         if source == 'exkinoray' and p.hostname in ('exkinoray.ru', 'www.exkinoray.ru') and p.path == '/details.php':
             fid = parse_qs(p.query).get('id', [''])[0]
             if not fid.isdigit(): return None
@@ -77,4 +100,4 @@ def lookup(catalog, card):
                         body.extend(part)
                         if len(body) > 2_000_000: raise ValueError('Page too large')
             return parse_tracker(body.decode('utf-8', 'replace'), card, url)
-    return None
+    return tracker_meta

@@ -44,6 +44,15 @@ class ArtworkTests(unittest.TestCase):
         self.assertIsNone(role(500,500));self.assertIsNone(role(4000,200))
         for body in (b'\xff\xd8\xfftest',b'not an image',png(1,1),b'\x89PNG\r\n\x1a\n'):
             with self.assertRaises(ValueError):dimensions(body)
+    def test_webp_dimensions_and_truncation(self):
+        def webp(kind,data):
+            return b'RIFF'+struct.pack('<I',12+len(data))+b'WEBP'+kind+struct.pack('<I',len(data))+data
+        extended=webp(b'VP8X',b'\0'*4+(499).to_bytes(3,'little')+(749).to_bytes(3,'little'))
+        lossy=webp(b'VP8 ',b'\0'*3+b'\x9d\x01\x2a'+struct.pack('<HH',500,750))
+        lossless=webp(b'VP8L',b'\x2f'+(499+(749<<14)).to_bytes(4,'little')+b'\0'*5)
+        for data in (extended,lossy,lossless):self.assertEqual(dimensions(data),(500,750))
+        for data in (extended[:25],lossy[:-1],b'RIFF'+b'\0'*26):
+            with self.assertRaises(ValueError):dimensions(data)
     def test_unverified_images_are_not_exposed_and_enrich_does_no_network(self):
         with patch('metadata.httpx.Client',side_effect=AssertionError('Unexpected network')):
             self.assertIsNone(self.card()['metadata']['poster'])

@@ -107,6 +107,7 @@ class Metadata:
                 card['metadata']=None
                 continue
             output=dict(meta,poster=None,backdrop=None,episode_still=None,artwork={})
+            output.pop('poster_alternatives',None)
             for hint,url in self._candidates(meta,source_meta):
                 asset=assets.get(url)
                 if not asset:continue  # The worker verifies geometry; never download during catalogue reads.
@@ -128,6 +129,10 @@ class Metadata:
                 if url and url not in seen:
                     seen.add(url)
                     yield kind,url
+            for url in (item or {}).get('poster_alternatives',[]):
+                if url and url not in seen:
+                    seen.add(url)
+                    yield 'poster',url
 
     def _card_art(self,cid):
         card=self.catalog.detail(cid)
@@ -169,8 +174,9 @@ class Metadata:
             db.execute('INSERT OR REPLACE INTO image_assets VALUES (?,?,?,?,?)',(url,width,height,version,time.time()))
 
     def _poster_url(self,url,refresh=False):
+        from native_metadata import tracker_poster
         p=urlparse(url)
-        if p.scheme!='https' or p.netloc not in ('mm.anwap.media','static.tvmaze.com','image.tmdb.org','www.lostfilm.tv') or p.query or p.fragment:raise KeyError('Invalid poster')
+        if not tracker_poster(url) and (p.scheme!='https' or p.netloc not in ('mm.anwap.media','static.tvmaze.com','image.tmdb.org','www.lostfilm.tv') or p.query or p.fragment):raise KeyError('Invalid poster')
         if p.netloc=='www.lostfilm.tv' and not re.fullmatch(r'/Static/Images/\d+/Posters/(?:image(?:_s\d+)?|poster)\.jpg',p.path):raise KeyError('Invalid poster')
         if p.netloc=='mm.anwap.media' and not re.fullmatch(r'/(?:films/screen|serials/posts)/\d+\.jpg',p.path):raise KeyError('Invalid poster')
         if p.netloc=='image.tmdb.org' and not re.fullmatch(r'/t/p/(?:w500|w780)/[A-Za-z0-9]+\.(?:jpg|png)',p.path):raise KeyError('Invalid poster')
@@ -248,7 +254,7 @@ class Metadata:
         detail=self.catalog.detail(cid) or card
         revision=hashlib.sha256(json.dumps([detail.get('source_slug'),detail.get('published_at'),
             sorted({r.get('season') for r in detail.get('releases',[]) if r.get('season') is not None})]).encode()).hexdigest()[:16]
-        key='content-v3:'+revision
+        key='content-v4:'+revision
         with self.catalog.db() as db:
             check=db.execute('SELECT checked_at FROM metadata_checks WHERE content_id=? AND provider=?',(cid,key)).fetchone()
         if check and time.time()-check[0]<7*86400:
@@ -274,7 +280,7 @@ class Metadata:
             self.last_error='Some metadata sources are unavailable; cached cards retained'
         else:
             with self.catalog.db() as db:
-                db.execute("DELETE FROM metadata_checks WHERE content_id=? AND provider LIKE 'content-v3:%'",(cid,))
+                db.execute("DELETE FROM metadata_checks WHERE content_id=? AND provider LIKE 'content-v4:%'",(cid,))
                 db.execute('INSERT OR REPLACE INTO metadata_checks VALUES (?,?,?)',(cid,key,time.time()))
 
     def start(self):

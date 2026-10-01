@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 from catalog import Catalog
 from metadata import Metadata
-from native_metadata import parse_lostfilm, parse_tracker, season_years
+from native_metadata import parse_lostfilm, parse_tracker, season_years, tracker_poster
 from tmdb import TMDB, match
 from test_catalog import release
 
@@ -52,3 +52,26 @@ class MetadataRefreshTests(unittest.TestCase):
             return {'results':[{'id':820792,'title':'Hidden Japan','release_date':'2020-03-23','poster_path':'/p.jpg'}]} if path=='/search/movie' else {'results':[]}
         with patch.object(api,'request',side_effect=request):meta=api.lookup(card)
         self.assertEqual(meta['provider_id'],820792);self.assertIn('/movie/',meta['url'])
+    def test_tracker_cover_precedes_description_and_screenshots(self):
+        cover='https://i128.fastpic.org/big/2026/0928/2b/abc123.webp'
+        shot='https://lostpix.com/img/2026-10/01/abcdef.jpg'
+        result=parse_tracker('<img src="'+cover+'"><b>Описание</b>: Текст.<b>Видео</b>: HD<img src="'+shot+'">',self.card,'https://rutor.info/torrent/1')
+        self.assertEqual(result['poster'],cover)
+        for bad in ['https://evil.test/a.jpg',cover+'?redirect=1',cover.replace('i128.fastpic.org','i128.fastpic.org.evil.test'),cover.replace('/big/','/thumb/')]:
+            self.assertFalse(tracker_poster(bad))
+    def test_confirmed_premiere_is_sent_to_search(self):
+        api=TMDB(Path(self.tmp.name));api.image_base='https://image.tmdb.org/t/p/w500'
+        card=dict(self.card,title='The Boys',metadata={'premiere_year':2019})
+        def request(path,params):
+            self.assertEqual(params['first_air_date_year'],2019)
+            return {'results':[{'id':76479,'name':'Пацаны','original_name':'The Boys','first_air_date':'2019-07-25'}]}
+        with patch.object(api,'request',side_effect=request):self.assertEqual(api.lookup(card)['provider_id'],76479)
+    def test_native_alternative_cover_survives_primary_host_failure(self):
+        first='https://i128.fastpic.org/big/2026/0928/2b/abc123.webp'
+        second='https://lostpix.com/img/2026-09/28/abcdef.jpg'
+        card=dict(self.card,metadata={'provider':'RuTor','poster':first,'poster_alternatives':[second]})
+        with self.cat.db() as db:db.execute('INSERT INTO catalog_provider_items VALUES (?,?)',(card['id'],json.dumps(card)))
+        from test_artwork import png
+        self.meta._record_image(second,png())
+        result=self.meta.enrich([dict(self.card)])[0]['metadata']
+        self.assertTrue(result['poster']);self.assertNotIn('poster_alternatives',result)

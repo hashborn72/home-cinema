@@ -7,6 +7,20 @@ def dimensions(body):
         if struct.unpack('>I', body[8:12])[0] != 13:
             raise ValueError('Invalid PNG header')
         width, height = struct.unpack('>II', body[16:24])
+    elif len(body)>=30 and body[:4]==b'RIFF' and body[8:12]==b'WEBP':
+        # https://developers.google.com/speed/webp/docs/riff_container
+        size=int.from_bytes(body[4:8],'little')+8
+        chunk=int.from_bytes(body[16:20],'little')
+        if size>len(body) or chunk+20>size:raise ValueError('Truncated WebP')
+        kind=body[12:16]
+        if kind==b'VP8X' and chunk==10:
+            if body[20]&2:raise ValueError('Animated artwork is unsupported')
+            width=1+int.from_bytes(body[24:27],'little');height=1+int.from_bytes(body[27:30],'little')
+        elif kind==b'VP8 ' and chunk>=10 and body[23:26]==b'\x9d\x01\x2a':
+            width=int.from_bytes(body[26:28],'little')&0x3fff; height=int.from_bytes(body[28:30],'little')&0x3fff
+        elif kind==b'VP8L' and chunk>=5 and body[20]==0x2f:
+            bits=int.from_bytes(body[21:25],'little');width=1+(bits&0x3fff);height=1+((bits>>14)&0x3fff)
+        else:raise ValueError('Unsupported WebP header')
     elif body.startswith(b'\xff\xd8'):
         pos = 2
         width = height = 0
