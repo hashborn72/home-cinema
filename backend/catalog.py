@@ -1,5 +1,4 @@
 """Small persistent catalogue. Upstream secrets/URLs never enter its public models."""
-import concurrent.futures
 from contextlib import contextmanager
 import email.utils
 import hashlib
@@ -15,7 +14,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from settings import jackett_url
 
-SOURCES = {'lostfilm': 'LostFilm — обновления сериалов', 'exkinoray': 'ExKinoRay — новые раздачи фильмов', 'rutor': 'RuTor — популярное среди последних раздач','anwap':'Anwap — последние фильмы и сериалы · 2020+'}
+SOURCES = {'lostfilm': 'LostFilm — обновления сериалов', 'rutor': 'RuTor — топ зарубежных и наших фильмов', 'exkinoray': 'ExKinoRay — новые раздачи фильмов','anwap':'Anwap — последние фильмы и сериалы · 2020+'}
 TTL = 600
 EPISODE = re.compile(r'(?i)\bS(\d{1,2})(?:E(\d{1,3}))?|\b(\d{1,2})x(\d{1,3})\b|(?:сезон[ыа]?|сери[яий])\s*\d')
 TECH = re.compile(r'(?i)(?<!\w)(?:\d{3,4}[pi]|BDRip|BDRemux|Blu[ -]?Ray|REMUX|WEB[ .-]?(?:DL(?:Rip)?|Rip)|WEBDL|HDRip|HDTV|DVDRip|DVD|UHD|HDR10?\+?|HEVC|AVC|x26[45]|H[ .]?26[45]|DUB|MVO|DVO|VO|AAC|DTS|FLAC|rus|eng|\d+(?:[.,]\d+)?\s*(?:GB|MB|ГБ|МБ))(?!\w)')
@@ -50,6 +49,12 @@ def native_matches_source(card,metadata):
 def number(value):
     try: return max(0, int(value))
     except (ValueError, TypeError): return None
+
+def rutor_torrent_id(row):
+    parsed=urllib.parse.urlparse(row.get('details',''))
+    if parsed.scheme not in ('http','https') or parsed.hostname not in ('rutor.info','rutor.is') or parsed.username or parsed.port not in (None,80,443):return None
+    found=re.match(r'/torrent/([1-9]\d*)(?:/|$)',parsed.path)
+    return found[1] if found else None
 
 def identify(raw, source, kind, release_id):
     text = html.unescape(raw).replace('\xa0', ' ')
@@ -128,6 +133,7 @@ class Catalog:
         self.data_dir = Path(data_dir)
         self.path = self.data_dir / 'library.sqlite3'
         self.stop_event = threading.Event()
+        self.ingest_lock = threading.RLock()
         self.threads = []
         with self.db() as db:
             db.executescript('''
@@ -163,8 +169,24 @@ class Catalog:
         return kind
 
     def ingest(self, source, rows, update_shelf=True, provider_cards=None):
+        with self.ingest_lock:
+            return self._ingest(source,rows,update_shelf,provider_cards)
+
+    def _ingest(self, source, rows, update_shelf=True, provider_cards=None):
+        # Jackett GUIDs and direct top-page links can name the same torrent differently.
+        # Keep existing release IDs so saved playback continues to resolve after the switch.
+        rutor_ids={}
+        if source=='rutor':
+            with self.db() as db:
+                for old in db.execute("SELECT payload FROM catalog_releases WHERE source='rutor'"):
+                    previous=json.loads(old[0]);tid=rutor_torrent_id(previous)
+                    if tid:rutor_ids.setdefault(tid,previous['id'])
         accepted = []
         for row in rows:
+            row=dict(row)
+            if source=='rutor':
+                tid=rutor_torrent_id(row)
+                if tid:row['id']=rutor_ids.setdefault(tid,row['id'])
             cats = row['categories']
             kind = row.get('kind') if source == 'rutor' else ('movie' if any(2000 <= c < 3000 for c in cats) else 'tv' if any(5000 <= c < 6000 for c in cats) else None)
             if kind not in ('movie','tv') or (source == 'lostfilm' and kind != 'tv'): continue
@@ -191,13 +213,19 @@ class Catalog:
                 row['seen_at'] = now
                 if not update_shelf:
                     row['seen_at']=prior.get('seen_at',0)
-                    if 'source_rank' in prior:row['source_rank']=prior['source_rank']
+                    for field in ('source_rank','home_category','home_rank'):
+                        if field in prior:row[field]=prior[field]
                 db.execute('INSERT OR REPLACE INTO catalog_releases VALUES (?,?,?,?)',
                            (row['id'],source,row['content']['id'],json.dumps(row,ensure_ascii=False)))
             if update_shelf:db.execute('INSERT OR REPLACE INTO catalog_sources VALUES (?,?,?,?,?)',(source,now,now,None,len(rows)+len(provider_cards or [])))
+        return {row['id'] for row in accepted}
 
     def refresh(self, source):
         try:
+            if source=='rutor':
+                from rutor_top import fetch_top
+                self.ingest(source,fetch_top())
+                return
             if source=='anwap':
                 from anwap import latest_home
                 movies,series=latest_home()
@@ -206,12 +234,8 @@ class Catalog:
             key = (self.data_dir/'jackett-key').read_text().strip()
             params = {'apikey':key,'t':'search','limit':100}
             # ExKinoRay includes genuine video mapped to TV; do not silently discard it.
-            if source != 'rutor': params['cat'] = '5000' if source == 'lostfilm' else '2000,5000'
+            params['cat'] = '5000' if source == 'lostfilm' else '2000,5000'
             rows = parse_feed(fetch(jackett_url()+'/api/v2.0/indexers/'+source+'/results/torznab/api?'+urllib.parse.urlencode(params)),source)
-            if source == 'rutor':
-                with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-                    for row,kind in zip(rows,pool.map(self.rutor_kind,rows)): row['kind'] = kind
-                if rows and not any(r['kind'] for r in rows): raise ValueError('Categories unavailable')
             self.ingest(source,rows)
         except Exception:
             # Upstream exception strings may contain URLs with API keys.
@@ -221,11 +245,13 @@ class Catalog:
 
     def start(self):
         def run(source):
+            initial=source=='rutor'  # Adopt the category top immediately, preserving the old shelf until success.
             while not self.stop_event.is_set():
                 with self.db() as db:
                     row = db.execute('SELECT * FROM catalog_sources WHERE source=?',(source,)).fetchone()
-                if not row or time.time()-row['fetched_at'] >= TTL:
+                if initial or not row or (source=='rutor' and row['error']) or time.time()-row['fetched_at'] >= TTL:
                     self.refresh(source)
+                initial=False
                 self.stop_event.wait(60)
         for source in SOURCES:
             thread = threading.Thread(target=run,args=(source,),daemon=True)
@@ -261,6 +287,7 @@ class Catalog:
             state = states.get(source,{})
             fetched = state.get('fetched_at',0)
             selected = [r for r in releases if fetched and r['source']==source and r.get('seen_at')==fetched]
+            rutor_top=source=='rutor' and bool(selected) and all(r.get('home_category') in ('kino','nashe_kino') for r in selected)
             cards = self.cards(selected)
             cards.sort(key=lambda r: (r['seeders'] or 0,r['published_at']) if source=='rutor' else (True,r.get('source_rank',0)) if source=='anwap' else ((r['media_type']=='movie') if source=='exkinoray' else True,r['published_at']),reverse=True)
             if source=='anwap':
@@ -270,10 +297,12 @@ class Catalog:
                 series=[c for c in series if (c.get('year') or 0)>=2020]
                 # The two source feeds have no comparable timestamps. Keep each feed's order.
                 cards=[items[i] for i in range(max(len(cards),len(series))) for items in (cards,series) if i<len(items)]
+            if source=='rutor' and not rutor_top:title='RuTor — популярное среди последних раздач'
             shelves.append({'id':source,'title':title,'results':cards[:40], 'fetched_at':fetched,
                             'stale':bool(fetched and (time.time()-fetched>=TTL or state.get('error'))),
                             'warming':not bool(state),'error':state.get('error'),'received':state.get('received',0),
-                            'scope':'popular_in_latest_100' if source=='rutor' else 'latest_available'})
+                            'scope':('category_top' if rutor_top else 'popular_in_latest_100') if source=='rutor' else 'latest_available',
+                            'description':('Топ категорий «Зарубежные фильмы» и «Наши фильмы» · без повторов фильмов' if rutor_top else 'По сидам среди последних 100 раздач · только видео') if source=='rutor' else None})
         return {'shelves':shelves,'cache_seconds':TTL}
 
     def search(self, query='', kind=None):

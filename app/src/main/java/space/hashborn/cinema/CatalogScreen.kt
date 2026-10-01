@@ -323,11 +323,13 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                                 Text(shelf.getString("title"),fontSize=20.sp,color=Color.White)
                                 if(visibleSection=="Главная") CompactButton("Все →",{providerState.select(row);section="Источники"})
                             }
+                            val description = (shelf.opt("description") as? String)?.takeIf { it.isNotBlank() }
                             val note = when {
                                 visibleSection=="Моё" -> "Сохранено на вашем сервере"
                                 shelf.optBoolean("stale") -> "Сохранённые данные · источник временно недоступен или обновляется"
                                 shelf.optBoolean("warming") -> "Загружаем источник…"
                                 !shelf.isNull("error") -> "Источник временно недоступен. Остальные витрины работают."
+                                description != null -> description
                                 row=="rutor" -> "По сидам среди последних 100 раздач · только видео"
                                 row=="anwap" -> "Прямое видео · доступное разрешение указано при выборе"
                                 else -> "Последние доступные раздачи · одинаковые качества сгруппированы"

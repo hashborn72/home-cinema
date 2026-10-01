@@ -34,7 +34,7 @@ class CatalogTests(unittest.TestCase):
         rows=[release('a','Фильм (2020) WEB-DL','rutor',[8000],kind='movie'),release('b','Музыка (2021)','rutor',[8000],kind='excluded'),release('c','Игра (2026)','rutor',[8000],kind=None),release('d','Другой (2022)','rutor',[8000],kind='tv')]
         rows[3]['seeders']=100
         self.cat.ingest('rutor',rows)
-        cards=self.cat.home()['shelves'][2]['results']
+        cards=next(s for s in self.cat.home()['shelves'] if s['id']=='rutor')['results']
         self.assertEqual([c['title'] for c in cards],['Другой','Фильм'])
     def test_category_html(self):
         self.assertEqual(category_html('<td>Категория</td><td><a href="/kino">Films</a>','film'),'movie')
@@ -57,7 +57,7 @@ class CatalogTests(unittest.TestCase):
         self.cat.ingest('exkinoray',[release('a','Фильм (2020) BDRip')])
         cid=self.cat.search()['results'][0]['id']
         self.cat.ingest('exkinoray',[])
-        self.assertEqual(self.cat.home()['shelves'][1]['results'],[])
+        self.assertEqual(next(s for s in self.cat.home()['shelves'] if s['id']=='exkinoray')['results'],[])
         self.assertIsNotNone(self.cat.detail(cid))
     def test_feed_and_unsafe_xml(self):
         raw=b'<rss xmlns:t="http://torznab.com/schemas/2015/feed"><channel><item><title>Film (2020)</title><guid>a</guid><t:attr name="category" value="2000"/><t:attr name="seeders" value="10"/></item></channel></rss>'

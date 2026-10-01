@@ -47,7 +47,20 @@ class ProviderTests(unittest.TestCase):
             self.p.start('exkinoray','Archive',100);state=self.wait('exkinoray','Archive',100)
             fetch.assert_called_once_with('exkinoray','Archive',100,100)
         self.assertEqual(state['status'],'ready');self.assertEqual(len(state['results']),1)
-        self.assertFalse(state['has_more']);self.assertEqual(self.cat.home()['shelves'][1]['results'],[])
+        self.assertFalse(state['has_more']);self.assertEqual(next(s for s in self.cat.home()['shelves'] if s['id']=='exkinoray')['results'],[])
+    def test_rutor_search_returns_top_torrent_after_jackett_id_is_remapped(self):
+        top=dict(release('direct-id','Фильм / Movie (2026) WEB-DL','rutor',kind='movie'),
+                 details='https://rutor.info/torrent/123/film',home_category='kino',home_rank=0)
+        self.cat.ingest('rutor',[top])
+        cid=self.cat.search()['results'][0]['id']
+        search=dict(top,id='jackett-id',details='http://rutor.is/torrent/123/renamed')
+        search.pop('home_category');search.pop('home_rank')
+        with patch.object(self.p,'jackett',return_value=[search]):
+            self.p.start('rutor','Фильм');state=self.wait('rutor','Фильм')
+        self.assertEqual(state['status'],'ready')
+        self.assertEqual([card['id'] for card in state['results']],[cid])
+        self.assertEqual([r['id'] for r in self.cat.detail(cid)['releases']],['direct-id'])
+        self.assertEqual(next(s for s in self.cat.home()['shelves'] if s['id']=='rutor')['scope'],'category_top')
     def test_paging_same_show_with_different_releases_is_not_the_end(self):
         rows=[release(str(i),'Same Show S01E%02d (2020) 1080p'%(i+1),cats=[5000]) for i in range(100)]
         with patch.object(self.p,'jackett',return_value=rows):

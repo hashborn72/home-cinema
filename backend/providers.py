@@ -171,8 +171,7 @@ class Providers:
                     rows=[r for r in rows if identify(r['raw'],source,'tv',r['id'])['id']==cid]
                     slug=self.catalog.detail(cid).get('source_slug')
                     if source=='lostfilm' and slug:rows=[r for r in rows if lostfilm_slug(r.get('details',''))==slug]
-                self.catalog.ingest(source,rows,update_shelf=False)
-                ids={r['id'] for r in rows}
+                ids=self.catalog.ingest(source,rows,update_shelf=False)
                 with self.catalog.db() as db:
                     stored=[json.loads(r['payload']) for r in db.execute('SELECT payload FROM catalog_releases WHERE source=?',(source,))]
                 cards=self.catalog.cards([r for r in stored if r['id'] in ids])
