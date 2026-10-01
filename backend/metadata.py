@@ -206,12 +206,12 @@ class Metadata:
             with self.catalog.db() as db:
                 native=db.execute('SELECT payload FROM catalog_provider_items WHERE id=?',(card['id'],)).fetchone()
             native_meta=(json.loads(native[0]).get('metadata') or {}) if native else {}
-            slug=slug or lostfilm_slug(native_meta.get('url',''))
+            slug=slug or lostfilm_slug(native_meta.get('url') or '')
             check_provider='LostFilm:portrait-v2:'+str(slug or '')
             with self.catalog.db() as db:
                 check=db.execute('SELECT checked_at FROM metadata_checks WHERE content_id=? AND provider=?',(card['id'],check_provider)).fetchone()
-            mismatch=slug and native_meta.get('url','').rstrip('/')!='https://www.lostfilm.tv/series/'+slug
-            directory_art='/Posters/image' in native_meta.get('poster','')
+            mismatch=slug and (native_meta.get('url') or '').rstrip('/')!='https://www.lostfilm.tv/series/'+slug
+            directory_art='/Posters/image' in (native_meta.get('poster') or '')
             if (not native_meta.get('poster') or directory_art or mismatch) and (not check or time.time()-check[0]>86400):
                 # Ambiguous TMDB titles (e.g. remakes) still get the provider's exact-ID poster.
                 try:
@@ -263,7 +263,8 @@ class Metadata:
                 for c in self.catalog.cards(self.catalog.snapshot()[1]):cards.setdefault(c['id'],c)
                 for card in cards.values():
                     if self.stop_event.is_set(): return
-                    self.refresh_native(card)
+                    try:self.refresh_native(card)
+                    except Exception:self.last_error='Provider artwork unavailable; other cards continue'
                     if time.time()>=self.retry_after and time.time()-checked.get(card['id'],0)>=86400:
                         try: self.refresh(card)
                         except Exception:

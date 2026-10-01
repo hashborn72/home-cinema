@@ -85,6 +85,14 @@ class IndexingTests(unittest.TestCase):
         with patch('providers.lostfilm_directory',return_value=([directory],False)),patch('metadata.fetch',return_value=b'<img src="/Static/Images/842/Posters/poster.jpg">'):
             self.meta.refresh_native(card)
         self.assertTrue(self.cat.detail(card['id'])['metadata']['poster'].endswith('/poster.jpg'))
+    def test_missing_native_poster_does_not_stop_refresh(self):
+        row=dict(release('a','Dark Matter S02E05',source='lostfilm',cats=[5000]),details='https://www.lostfilm.tv/series/Dark_Matter_2024/season_2/episode_5/')
+        self.cat.ingest('lostfilm',[row]);card=self.cat.home()['shelves'][0]['results'][0]
+        directory=dict(card,metadata={'provider':'LostFilm','url':None,'poster':None})
+        with self.cat.db() as db:db.execute('INSERT INTO catalog_provider_items VALUES (?,?)',(card['id'],json.dumps(directory)))
+        with patch('providers.lostfilm_directory',return_value=([],False)),patch('metadata.fetch',return_value=b'<img src="/Static/Images/842/Posters/poster.jpg">'):
+            self.meta.refresh_native(card)
+        self.assertTrue(self.cat.detail(card['id'])['metadata']['poster'].endswith('/poster.jpg'))
 
 
 class AnwapSeriesTests(unittest.TestCase):

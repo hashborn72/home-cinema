@@ -24,11 +24,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 import coil.compose.AsyncImage
-import android.content.Intent
-import android.net.Uri
-import androidx.compose.foundation.Image
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.ui.Alignment
@@ -72,7 +67,6 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
     var seriesLoading by remember {mutableStateOf(false)}
     var seriesError by remember {mutableStateOf("")}
     var seriesAttempt by remember {mutableIntStateOf(0)}
-    val context = LocalContext.current
     var selectedId by remember { mutableStateOf("") }
     var selectedRow by remember { mutableStateOf("") }
     var restoreFocus by remember { mutableStateOf(false) }
@@ -102,7 +96,7 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
     }
     LaunchedEffect(section) {
         data = null
-        if (section != "Поиск" && section != "Источники") refresh()
+        if (section !in listOf("Поиск","Источники","Настройки")) refresh()
         if (section == "Главная") while (isActive) { delay(10000); refresh() }
     }
     LaunchedEffect(section,query) {
@@ -275,13 +269,15 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                         }
                     }
                 },onRetry={seriesAttempt++})
+        } else if(section=="Настройки") {
+            CinemaSettingsScreen(onBack={section="Главная"},onProbe=onProbe)
         } else if(section=="Источники") {
             ProviderScreen(providerState,request,post,onBack={section="Главная"},onOpen={open(it,"Источники")})
         } else {
             LazyColumn(Modifier.fillMaxSize().background(Ink).padding(horizontal=28.dp,vertical=12.dp),state=columnState,verticalArrangement=Arrangement.spacedBy(6.dp)) {
                 item {
                     Row(horizontalArrangement=Arrangement.spacedBy(14.dp)) {
-                        listOf("Главная","Фильмы","Сериалы","Поиск","Моё","Источники").forEach { name ->
+                        listOf("Главная","Фильмы","Сериалы","Поиск","Моё","Источники","Настройки").forEach { name ->
                             CompactButton(if(section==name) "• $name" else name,{section=name},Modifier.focusRequester(menuFocusRequesters.getOrPut(name){FocusRequester()}))
                         }
                     }
@@ -357,13 +353,6 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                             }
                         }
                     }
-                }
-                item {
-                    Text("О приложении · ${BuildConfig.VERSION_NAME} · Личная медиатека",color=Muted,fontSize=16.sp)
-                    Image(painterResource(R.drawable.tmdb_logo),contentDescription="TMDB",modifier=Modifier.width(137.dp).height(32.dp))
-                    Text("This product uses the TMDB API but is not endorsed or certified by TMDB.",color=Muted,fontSize=13.sp)
-                    Text("TMDB — описания и изображения. Anwap и TVmaze указаны в карточках. Воспроизведение — Just Player.",color=Muted,fontSize=13.sp)
-                    Button(onClick=onProbe) {Text("Подключение и проверка плеера")}
                 }
             }
         }
