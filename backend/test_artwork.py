@@ -90,6 +90,12 @@ class ArtworkTests(unittest.TestCase):
             self.assertEqual(self.meta._poster_url(self.url),path)
             self.assertEqual(client.call_count,1)
         self.assertEqual(self.card()['metadata']['poster'],version)
+    def test_upgrade_classifies_old_cache_without_network(self):
+        self.seed(self.url,png())
+        with self.cat.db() as db:db.execute('DELETE FROM image_assets')
+        with patch('metadata.httpx.Client',side_effect=AssertionError('Unexpected network')):
+            updated=Metadata(self.cat)
+            self.assertIsNotNone(updated.enrich([self.cat.detail(self.cid)])[0]['metadata']['poster'])
     def test_native_episode_still_keeps_its_role(self):
         url='https://image.tmdb.org/t/p/w780/still.png';self.seed(url,png(800,450))
         with self.cat.db() as db:

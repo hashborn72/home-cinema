@@ -47,6 +47,24 @@ class Metadata:
             db.execute('CREATE TABLE IF NOT EXISTS metadata_cache(content_id TEXT PRIMARY KEY,payload TEXT,checked_at REAL NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS metadata_checks(content_id TEXT,provider TEXT,checked_at REAL NOT NULL,PRIMARY KEY(content_id,provider))')
             db.execute('CREATE TABLE IF NOT EXISTS image_assets(url TEXT PRIMARY KEY,width INTEGER NOT NULL,height INTEGER NOT NULL,version TEXT NOT NULL,checked_at REAL NOT NULL)')
+        self.classify_cached_artwork()
+
+    def classify_cached_artwork(self):
+        # A release must not hide existing posters while slow metadata lookups warm up.
+        # Classify local cache files immediately, without contacting any provider.
+        with self.catalog.db() as db:
+            known={r[0] for r in db.execute('SELECT url FROM image_assets')}
+            payloads=[json.loads(r[0]) for r in db.execute('SELECT payload FROM metadata_cache WHERE payload IS NOT NULL')]
+            payloads.extend((json.loads(r[0]).get('metadata') or {}) for r in db.execute('SELECT payload FROM catalog_provider_items'))
+            payloads.extend((json.loads(r[0]).get('content',{}).get('metadata') or {}) for r in db.execute('SELECT payload FROM catalog_releases'))
+        for item in payloads:
+            for _,url in self._candidates(item,None):
+                if url in known:continue
+                known.add(url)
+                path=self.catalog.data_dir/'posters'/hashlib.sha256(url.encode()).hexdigest()
+                if path.is_file():
+                    try:self._record_image(url,path.read_bytes())
+                    except (OSError,ValueError):pass
 
     @staticmethod
     def choose(native,cached):
