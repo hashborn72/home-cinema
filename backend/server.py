@@ -164,7 +164,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
         <h1>Домашняя медиатека</h1>
         <p>'''+download+'''</p>
         <p>Установите APK, откройте приложение, укажите адрес сервера и нажмите «Подключить».</p>
-        <p>Сервер: '''+html.escape(public_url())+'''<br>Для видео нужен Just Player.</p>
+        <p>Сервер: '''+html.escape(public_url())+'''<br>Для видео установите Just Player или VLC. Выбор плеера сохраняется в настройках приложения.</p>
         <p>Только домашняя сеть. Не открывайте этот сервер в интернет.</p></body></html>'''
 
     @app.api_route('/downloads/home-cinema.apk', methods=['GET', 'HEAD'])
@@ -176,7 +176,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'version': '0.9.6', 'environment': 'compose' if os.environ.get('CINEMA_STACK_SETUP') == '1' else 'development'}
+        return {'status': 'ok', 'version': '0.9.7', 'environment': 'compose' if os.environ.get('CINEMA_STACK_SETUP') == '1' else 'development'}
 
     @app.get('/api/v1/metadata/status', dependencies=[Depends(auth)])
     def metadata_status():return dict(metadata.status(),index_last_success=indexer.last_success,index_error=indexer.last_error)

@@ -48,7 +48,7 @@ fun ConnectionScreen(currentBackend: String, canCancel: Boolean, onCancel: () ->
                 if(canCancel) Button(enabled=!busy,onClick=onCancel) { Text("Назад") }
             }
             if(error.isNotEmpty()) Text(error,color=Color(0xFFFCA5A5),fontSize=16.sp)
-            Text("Доверенная локальная сеть — без кода и ключа. Just Player устанавливается отдельно.\n"+
+            Text("Доверенная локальная сеть — без кода и ключа. Just Player или VLC устанавливается отдельно.\n"+
                  "Подключение по HTTP предназначено только для доверенной домашней сети.",
                  color=Color(0xFFA8B5C7),fontSize=13.sp)
         }

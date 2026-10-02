@@ -2,7 +2,6 @@ package space.hashborn.cinema
 
 import android.app.Activity
 import android.content.ActivityNotFoundException
-import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -28,19 +27,19 @@ class MainActivity : ComponentActivity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val prefs by lazy { getSharedPreferences("cinema", MODE_PRIVATE) }
     private var busy by mutableStateOf(false)
-    private var status by mutableStateOf("Подключаемся к тестовому backend…")
+    private var status by mutableStateOf("Подключаемся к серверу…")
     private var progress by mutableStateOf<Long?>(null)
     private var lastResult by mutableStateOf("Результатов ещё нет. Запуск видео не означает просмотр.")
     private var mediaUrl = ""
+    private var selectedPlayer by mutableStateOf(ExternalPlayer.JUST)
     private var showProbe by mutableStateOf(false)
     private var showConnection by mutableStateOf(false)
     private fun hasConnection() = prefs.getBoolean("trusted_lan", false) || !prefs.getString("token", "").isNullOrEmpty()
     private val launcher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val session = prefs.getString("active_session", null)
         val data = result.data
-        val position = if (data?.hasExtra("position") == true) data.getIntExtra("position", -1).toLong() else null
-        val duration = if (data?.hasExtra("duration") == true) data.getIntExtra("duration", -1).toLong() else null
-        val parsed = PlaybackResult.validated(position, duration, data?.getStringExtra("end_by"))
+        val player = ExternalPlayer.fromPreference(prefs.getString("active_player", null))
+        val parsed = player.result(data)
         lastResult = "Возврат: ${if (result.resultCode == Activity.RESULT_OK) "OK" else "без результата"}; " +
             "позиция: ${parsed.positionMs?.let(::formatTime) ?: "не передана"}; причина: ${parsed.endBy ?: "не передана"}"
         if (session != null) {
@@ -50,7 +49,7 @@ class MainActivity : ComponentActivity() {
                 .put("duration_ms", parsed.durationMs ?: JSONObject.NULL)
                 .put("end_by", parsed.endBy ?: JSONObject.NULL)
             // Persist before making the request: a network outage must not lose returned progress.
-            prefs.edit().putString("pending_result", event.toString()).remove("active_session")
+            prefs.edit().putString("pending_result", event.toString()).remove("active_session").remove("active_player")
                 .putString("last_result", lastResult).commit()
             refresh()
         }
@@ -65,6 +64,7 @@ class MainActivity : ComponentActivity() {
             intent.removeExtra("backend_token")
         }
         lastResult = prefs.getString("last_result", lastResult) ?: lastResult
+        selectedPlayer = ExternalPlayer.fromPreference(prefs.getString("player_package", null))
         showConnection = !hasConnection()
         setContent {
             if (showConnection) {
@@ -82,8 +82,22 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 LazyColumn(modifier = Modifier.fillMaxSize().background(Color(0xFF101722)).padding(horizontal = 48.dp, vertical = 30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
                     item { Text("ДОМАШНЯЯ МЕДИАТЕКА", color = Color(0xFF5EEAD4), fontSize = 14.sp) }
-                    item { Text("Проверка Just Player", color = Color.White, fontSize = 30.sp) }
+                    item { Text("Плеер: ${selectedPlayer.label}", color = Color.White, fontSize = 30.sp) }
                     item { Text("Диагностика внешнего плеера · Android TV", color = Color(0xFF9CA3AF)) }
+                    item {
+                        Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                            ExternalPlayer.entries.forEach { player ->
+                                Button(enabled = !busy, onClick = {
+                                    if (prefs.edit().putString("player_package", player.packageName).commit()) {
+                                        selectedPlayer = player
+                                        status = "Выбор сохранён: ${player.label}. Он будет использоваться для всех видео."
+                                    } else status = "Не удалось сохранить выбор плеера."
+                                }) { Text(if (selectedPlayer == player) "✓ ${player.label}" else player.label) }
+                            }
+                        }
+                    }
+                    item { Text("Установите выбранный плеер на телевизор отдельно. Выбор сохраняется после закрытия приложения и перезагрузки телевизора.", color = Color(0xFF9CA3AF)) }
+                    item { Button(onClick = { showProbe = false }, enabled = !busy) { Text("Вернуться в каталог") } }
                     item { Text(status, color = Color.White) }
                     item { Text("Сохранено на сервере: ${progress?.let(::formatTime) ?: "позиция неизвестна"}", color = Color.White, fontSize = 20.sp) }
                     item {
@@ -168,18 +182,11 @@ class MainActivity : ComponentActivity() {
             val session = request("/api/v1/playback/file-sessions",JSONObject()
                 .put("release_id",release).put("file_id",file).put("resume",resume))
             val url = session.getString("stream_url")
-            prefs.edit().putString("active_session",session.getString("id")).commit()
-            launcher.launch(Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(Uri.parse(url),"video/*")
-                setPackage("com.brouken.player")
-                putExtra("position",session.getInt("start_position_ms"))
-                putExtra("return_result",true)
-                putExtra("title",session.getString("title"))
-            })
-            status = "Запущен Just Player. Back возвращает подтверждённую позицию."
+            launchPlayer(session.getString("id"), url, session.getString("title"), session.getLong("start_position_ms"))
+            status = "Запущен ${selectedPlayer.label}. Для сохранения позиции вернитесь кнопкой Back."
         } catch (_: ActivityNotFoundException) {
-            prefs.edit().remove("active_session").commit()
-            throw IllegalStateException("Just Player не установлен")
+            prefs.edit().remove("active_session").remove("active_player").commit()
+            throw IllegalStateException("${selectedPlayer.label} не установлен. Установите его на телевизор или выберите другой плеер в настройках.")
         } finally { busy=false }
     }
 
@@ -214,21 +221,21 @@ class MainActivity : ComponentActivity() {
                     progress ?: 0L
                 }
                 val session = request("/api/v1/playback/sessions", JSONObject().put("start_position_ms", position))
-                prefs.edit().putString("active_session", session.getString("id")).commit()
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(mediaUrl)).apply {
-                    setDataAndType(Uri.parse(mediaUrl), "video/mp4")
-                    setPackage("com.brouken.player")
-                    putExtra("position", position.toInt())
-                    putExtra("return_result", true)
-                    putExtra("title", "Big Buck Bunny — проверка медиатеки")
-                }
-                launcher.launch(intent)
+                launchPlayer(session.getString("id"), mediaUrl, "Big Buck Bunny — проверка медиатеки", position)
             } catch (_: ActivityNotFoundException) {
-                prefs.edit().remove("active_session").commit()
-                status = "Just Player не установлен (com.brouken.player)."
+                prefs.edit().remove("active_session").remove("active_player").commit()
+                status = "${selectedPlayer.label} не установлен. Установите его на телевизор или выберите другой плеер."
             } catch (e: Exception) { status = "Запуск не удался: ${e.message}" }
             finally { busy = false }
         }
+    }
+
+    private fun launchPlayer(sessionId: String, url: String, title: String, positionMs: Long) {
+        val player = selectedPlayer
+        check(prefs.edit().putString("active_session", sessionId).putString("active_player", player.packageName).commit()) {
+            "Не удалось сохранить сеанс воспроизведения."
+        }
+        launcher.launch(player.intent(url, title, positionMs))
     }
 
     override fun onDestroy() { scope.cancel(); super.onDestroy() }
