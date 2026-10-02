@@ -22,7 +22,3 @@ def jackett_url():
 
 def torrserver_url():
     return endpoint('TORRSERVER_URL', 'http://192.168.1.144:8090')
-
-
-def torrserver_public_url():
-    return endpoint('TORRSERVER_PUBLIC_URL', 'http://192.168.1.144:8090')

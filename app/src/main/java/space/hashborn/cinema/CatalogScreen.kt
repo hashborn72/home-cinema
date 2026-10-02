@@ -228,38 +228,20 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
     MaterialTheme(colorScheme=darkColorScheme()) {
         if (release != null) {
             val current = release!!
-            LazyColumn(Modifier.fillMaxSize().background(Ink).padding(28.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
-                item { CompactButton("←",{release=null}) }
-                item { Text(current.getString("title"),fontSize=24.sp,color=Color.White) }
-                item { Text("Выбери файл. Позиция сохраняется отдельно для каждого файла и версии раздачи.",color=Muted) }
-                if(preparing) item { Text(if(current.optString("kind")=="direct") "Получаем варианты прямого видео…" else "Получаем список файлов через TorrServer…",color=Color(0xFF5EEAD4)) }
-                if(fileError.isNotEmpty()) item {
-                    Text(fileError,color=Color(0xFFFBBF24))
-                    Button(onClick={prepareAttempt++},enabled=!preparing) {Text("Повторить")}
-                }
-                items(files?.optJSONArray("files")?.objects() ?: emptyList(),key={it.getInt("id")}) { file ->
-                    Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
-                        val fileEpisode=episodeRange(file.getString("path").substringAfterLast('/'))
-                        if(fileEpisode.first!=null) Text(fileEpisode.label(),color=Color(0xFF5EEAD4),fontSize=22.sp)
-                        Text(file.getString("path").substringAfterLast('/'),color=Color.White,fontSize=16.sp)
-                        Text((if(file.optBoolean("sample")) "Образец · " else "") +
-                            (if(file.optBoolean("completed")) "Плеер сообщил о завершении" else if(!file.isNull("position_ms")) "Сохранено: ${formatPlaybackPosition(file.optLong("position_ms"))}" else "Позиция ещё не сохранена"),color=Muted)
-                        Row(horizontalArrangement=Arrangement.spacedBy(18.dp)) {
-                            listOf(false to "С начала",true to "Продолжить").forEach { (resume,label) ->
-                                Button(enabled=!playerBusy && !preparing && (!resume || (file.optLong("position_ms")>0 && !file.optBoolean("completed"))),onClick={scope.launch {
-                                    try { onPlay(current.getString("id"),file.getInt("id"),resume); fileError="" }
-                                    catch(e:Exception) {fileError=e.message ?: "Ошибка запуска"}
-                                }}) { Text(label) }
-                            }
-                        }
-                    }
-                }
-                item { Text(playerStatus,color=Muted,fontSize=13.sp) }
-                item { Button(onClick={scope.launch {
-                    try {files=request("/api/v1/releases/"+current.getString("id")+"/files")}
+            ReleaseFilesScreen(current,detail,files?.optJSONArray("files")?.objects() ?: emptyList(),
+                preparing,playerBusy,fileError,playerStatus,
+                onBack={release=null;autoResumeFile=null},
+                onRetry={prepareAttempt++},
+                onPlay={file,resume -> scope.launch {
+                    try {onPlay(current.getString("id"),file.getInt("id"),resume);fileError=""}
+                    catch(cancelled:CancellationException) {throw cancelled}
+                    catch(e:Exception) {fileError=e.message ?: "Ошибка запуска"}
+                }},
+                onRefresh={scope.launch {
+                    try {files=request("/api/v1/releases/"+current.getString("id")+"/files");fileError=""}
+                    catch(cancelled:CancellationException) {throw cancelled}
                     catch(_:Exception) {fileError="Нет связи с сервером"}
-                }},enabled=!preparing) {Text("Обновить позиции")} }
-            }
+                }})
         } else if (detail != null) {
             val item=detail!!
             DetailScreen(item,detailState,seriesLoading,seriesError.ifEmpty{error},flagBusy,
@@ -339,7 +321,7 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                         val cards=shelf.getJSONArray("results").objects()
                         item(key=row+"-cards") {
                             if(cards.isEmpty()) Text("Пока нет карточек",color=Muted)
-                            LazyRow(state=rowStates.getOrPut(row){androidx.compose.foundation.lazy.LazyListState()},horizontalArrangement=Arrangement.spacedBy(12.dp),contentPadding=PaddingValues(vertical=3.dp)) {
+                            LazyRow(state=rowStates.getOrPut(row){androidx.compose.foundation.lazy.LazyListState()},horizontalArrangement=Arrangement.spacedBy(12.dp),contentPadding=PaddingValues(vertical=6.dp)) {
                                 items(cards,key={it.getString("id")}) { card ->
                                     val key=row+":"+card.getString("id")
                                     CinemaCard(card,focusRequesters.getOrPut(key){FocusRequester()},landscape=false) {open(card,row)}
@@ -370,16 +352,21 @@ internal fun CinemaCard(card:JSONObject,requester:FocusRequester,landscape:Boole
     Surface(onClick=onClick,modifier=Modifier.width(width).focusRequester(requester),
         colors=ClickableSurfaceDefaults.colors(containerColor=Color.Transparent,focusedContainerColor=Color.Transparent,
             contentColor=Color.White,focusedContentColor=Color.White),
-        scale=ClickableSurfaceDefaults.scale(focusedScale=1.025f),
+        scale=ClickableSurfaceDefaults.scale(focusedScale=1f),
         border=ClickableSurfaceDefaults.border(focusedBorder=Border(BorderStroke(2.dp,Color(0xFF78DCF4))))) {
-        Column(verticalArrangement=Arrangement.spacedBy(5.dp)) {
+        Column {
             val meta=card.optJSONObject("metadata")
             val poster=if(landscape) meta?.optional("episode_still")?.takeIf{it.isNotEmpty()} ?: meta?.optional("backdrop") else meta?.optional("poster")
             CinemaPoster(poster.orEmpty(),Modifier.fillMaxWidth().aspectRatio(if(landscape) 16f/9f else 2f/3f).clip(RoundedCornerShape(6.dp)),displayTitle(card),landscape)
-            Text(displayTitle(card),fontSize=17.sp,minLines=2,maxLines=2,overflow=TextOverflow.Ellipsis,lineHeight=20.sp)
-            val year=card.optional("year").ifEmpty {card.optJSONObject("metadata")?.optional("year") ?: ""}
-            val sources=card.optJSONArray("sources")?.let {a -> (0 until a.length()).joinToString(" · "){providerName(a.getString(it))}}.orEmpty()
-            Text(listOf(year,sources).filter{it.isNotBlank()}.joinToString(" · "),fontSize=12.sp,color=Muted,maxLines=1,overflow=TextOverflow.Ellipsis)
+            // Keep both caption lines and the metadata inside the rounded focus border.
+            Column(Modifier.fillMaxWidth().padding(start=6.dp,end=6.dp,top=7.dp,bottom=10.dp),
+                verticalArrangement=Arrangement.spacedBy(4.dp)) {
+                Text(displayTitle(card),fontSize=17.sp,minLines=2,maxLines=2,overflow=TextOverflow.Ellipsis,lineHeight=20.sp)
+                val year=card.optional("year").ifEmpty {card.optJSONObject("metadata")?.optional("year") ?: ""}
+                val sources=card.optJSONArray("sources")?.let {a -> (0 until a.length()).joinToString(" · "){providerName(a.getString(it))}}.orEmpty()
+                Text(listOf(year,sources).filter{it.isNotBlank()}.joinToString(" · "),fontSize=12.sp,lineHeight=17.sp,
+                    color=Muted,maxLines=1,overflow=TextOverflow.Ellipsis)
+            }
         }
     }
 }

@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 from server import create_app
-from settings import endpoint, public_url, torrserver_public_url
+from settings import endpoint, public_url
 from stack_init import initialize
 from torrents import jackett_url
 
@@ -106,7 +106,6 @@ class StackTests(unittest.TestCase):
             self.assertEqual(response['stream_url'],'http://192.168.1.144:8093/probe-media')
             self.assertIn(public_url(),client.get('/install').text)
             self.assertNotIn('192.168.0.221',client.get('/install').text)
-            self.assertEqual(torrserver_public_url(),'http://192.168.1.144:8090')
 
     def test_invalid_endpoint_rejected(self):
         for value in ('file:///etc/passwd','http://user:secret@host','http://host/path','http://host?token=x'):

@@ -10,8 +10,8 @@ android {
         applicationId = "space.hashborn.cinema"
         minSdk = 23
         targetSdk = 35
-        versionCode = 16
-        versionName = "0.9.5"
+        versionCode = 17
+        versionName = "0.9.6"
     }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions {
@@ -19,6 +19,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+    testOptions.unitTests.isIncludeAndroidResources = true
 }
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.04.00"))
@@ -29,4 +30,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
     implementation("io.coil-kt:coil-compose:2.7.0")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
 }

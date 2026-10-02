@@ -5,11 +5,11 @@ import os
 import re
 import threading
 import time
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, quote
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 import httpx
 
-from settings import jackett_url as jackett_endpoint, torrserver_url, torrserver_public_url
+from settings import jackett_url as jackett_endpoint, torrserver_url
 VIDEO = {'.mkv', '.mp4', '.avi', '.m4v', '.mov', '.ts', '.m2ts', '.webm', '.mpg', '.mpeg'}
 
 
@@ -165,5 +165,4 @@ class Torrents:
             item=resolve(release['film_id'],file_id)
             return dict(item,content_id=release['content']['id'])
         file_key=r['hash']+':'+str(file_id)
-        return {'content_id':release['content']['id'],'file_key':file_key,'title':file['path'],
-                'stream_url':torrserver_public_url()+'/stream/'+quote(file['path'].rsplit('/',1)[-1],safe='')+'?'+urlencode({'link':r['hash'],'index':file_id,'play':''})}
+        return {'content_id':release['content']['id'],'file_key':file_key,'title':file['path']}

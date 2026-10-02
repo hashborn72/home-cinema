@@ -17,6 +17,7 @@ from metadata import Metadata
 from library import Library
 from anwap import Search
 from streaming import Streams
+from torrent_streaming import TorrentStreams
 from pairing import Pairing
 from providers import Providers
 from indexing import Indexer
@@ -116,6 +117,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
     library = Library(catalog)
     anwap_search = Search(catalog)
     streams = Streams(catalog)
+    torrent_streams = TorrentStreams(catalog,torrents)
     providers = Providers(catalog)
     indexer = Indexer(catalog,providers,metadata)
     @asynccontextmanager
@@ -174,13 +176,16 @@ def create_app(data_dir: Path, test_token: str | None = None):
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'version': '0.9.5', 'environment': 'compose' if os.environ.get('CINEMA_STACK_SETUP') == '1' else 'development'}
+        return {'status': 'ok', 'version': '0.9.6', 'environment': 'compose' if os.environ.get('CINEMA_STACK_SETUP') == '1' else 'development'}
 
     @app.get('/api/v1/metadata/status', dependencies=[Depends(auth)])
     def metadata_status():return dict(metadata.status(),index_last_success=indexer.last_success,index_error=indexer.last_error)
 
     @app.get('/play/{ticket}')
     async def play_stream(ticket: str,request:Request):return await streams.stream(ticket,request)
+
+    @app.api_route('/torrent-play/{ticket}',methods=['GET','HEAD'])
+    async def play_torrent(ticket: str,request:Request):return await torrent_streams.stream(ticket,request)
 
     @app.get('/images/{content_id}')
     def image(content_id: str,kind: str='poster',v: str | None=None):
@@ -253,6 +258,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
         item=selection(body.release_id,body.file_id)
         source=torrents.release(body.release_id)
         if source['source']=='anwap':item['stream_url']=streams.ticket(source['film_id'],body.file_id,item)
+        else:item['stream_url']=torrent_streams.ticket(body.release_id,item)
         session_id=str(uuid.uuid4())
         with db() as conn:
             conn.execute('BEGIN IMMEDIATE')

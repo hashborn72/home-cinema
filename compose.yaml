@@ -1,7 +1,7 @@
 name: home-cinema
 
 x-backend: &backend-image
-  image: local/home-cinema-backend:0.9.5
+  image: local/home-cinema-backend:0.9.6
   build: ./backend
   pull_policy: build
 
@@ -35,8 +35,6 @@ services:
       AUTO_UPDATE: "false"
     depends_on:
       init: {condition: service_completed_successfully}
-    ports:
-      - "${CINEMA_HOST:-192.168.1.144}:${JACKETT_PORT:-8091}:9117"
     volumes:
       - jackett-config:/config
     restart: unless-stopped
@@ -56,8 +54,6 @@ services:
     command: ["--path", "/config", "--port", "8090", "--ip", "0.0.0.0", "--logpath", "/tmp/torrserver.log"]
     depends_on:
       init: {condition: service_completed_successfully}
-    ports:
-      - "${CINEMA_HOST:-192.168.1.144}:${TORRSERVER_PORT:-8090}:8090"
     volumes:
       - torrserver-config:/config
     tmpfs:
@@ -83,7 +79,6 @@ services:
       JACKETT_URL: http://jackett:9117
       JACKETT_LEGACY_URLS: "http://192.168.1.144:8091"
       TORRSERVER_URL: http://torrserver:8090
-      TORRSERVER_PUBLIC_URL: "http://${CINEMA_HOST:-192.168.1.144}:${TORRSERVER_PORT:-8090}"
       CINEMA_STACK_SETUP: "1"
     depends_on:
       init: {condition: service_completed_successfully}
