@@ -81,7 +81,9 @@ class RutorTopTests(unittest.TestCase):
         for link in ('https://evil.test/torrent/1/sample', '//127.0.0.1/torrent/1/sample',
                      'https://rutor.info.evil.test/torrent/1/sample', 'https://user@rutor.info/torrent/1/sample',
                      'https://rutor.info:8080/torrent/1/sample', '/torrent/1/sample?redirect=1',
-                     '/torrent/1/../private', '/torrent/1/%2e%2e', '/download/1'):
+                     '/torrent/1/.', '/torrent/1/..', '/torrent/1/../private',
+                     '/torrent/1/%2e%2e', '/torrent/1/sample/extra',
+                     '/torrent/1/sample\\private', '/torrent/1/sample%2fprivate', '/download/1'):
             with self.subTest(link=link):
                 with self.assertRaises(ValueError):
                     top_rows(page(kino=row(link=link)))
@@ -89,6 +91,24 @@ class RutorTopTests(unittest.TestCase):
     def test_safe_mirror_links_are_canonicalized(self):
         item = top_rows(page(kino=row(link='http://rutor.is/torrent/123/sample')))[0]
         self.assertEqual(item['details'], BASE + '/torrent/123/sample')
+
+    def test_punctuated_live_slug_does_not_discard_the_whole_top(self):
+        link = '/torrent/1109353/zhivotnye_animals-2026-web-dlrip-avc-ot-domino-selezen-d-videofilm-int.'
+        rows = top_rows(page(kino=row(1) + row(1109353, link=link)))
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[1]['details'], BASE + link)
+        self.assertEqual(rows[1]['rutor_id'], '1109353')
+        self.assertEqual(rows[1]['home_rank'], 1)
+        self.assertEqual(rows[-1]['home_category'], 'nashe_kino')
+
+    def test_live_domestic_title_guillemets_and_unicode_are_valid_slugs(self):
+        for slug in ('pozyvnoj-«asket»-2026-web-dl-1080p-ot-elektri4ka-kion',
+                     'Позывной-«Аскет»-2026', 'film-part-(2)-2026'):
+            with self.subTest(slug=slug):
+                link = '/torrent/1108605/' + slug
+                rows = top_rows(page(domestic=row(1108605, link=link)))
+                self.assertEqual(rows[-1]['details'], BASE + link)
+                self.assertEqual(rows[-1]['home_category'], 'nashe_kino')
 
     def test_duplicate_torrent_id_is_one_release_but_conflicting_hash_fails(self):
         rows = top_rows(page(kino=row() + row(link='/torrent/1108276/renamed-slug')))

@@ -154,8 +154,10 @@ class TopParser(HTMLParser):
                 magnets.append(magnet(href))
                 continue
             path = source_path(href)
-            found = re.fullmatch(r'/torrent/([1-9]\d*)/([A-Za-z0-9_-]+)', path or '')
-            if found:
+            # Slugs retain title punctuation (dots, guillemets, Unicode).
+            # Identity is the numeric ID; still require one safe path segment.
+            found = re.fullmatch(r'/torrent/([1-9]\d*)/([^\s/\\%?#]+)', path or '')
+            if found and found[2] not in ('.', '..'):
                 title = ' '.join(''.join(link['text']).split())
                 if title:
                     titles.append((found[1], BASE + path, title))
