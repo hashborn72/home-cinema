@@ -32,7 +32,7 @@ class Indexer:
         for cid in ids:
             card = self.catalog.detail(cid)
             if card and card.get('sources'):
-                jobs.append((card['sources'][0], card['title'][:120], 0, cid))
+                jobs.append((card['sources'][0], card['title'][:120], 0, card['id']))
         # Cache the next LostFilm directory pages gradually, not all thousands of releases at once.
         jobs.extend(('lostfilm', '', offset, '') for offset in (20, 40, 60, 80))
         return jobs

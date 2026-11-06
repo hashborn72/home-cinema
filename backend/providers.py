@@ -84,6 +84,7 @@ class Providers:
     def expand(self,cid,start=False):
         card=self.catalog.detail(cid)
         if not card:raise KeyError(cid)
+        cid=card['id']
         sources=[s for s in card['sources'] if s!='anwap' or card.get('anwap_series_id')]
         if card['media_type']!='tv' or not sources:raise ValueError('Not a torrent series')
         # Identity is source-specific for series. Do not merge unrelated same-name shows.

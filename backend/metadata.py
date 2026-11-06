@@ -318,7 +318,8 @@ class Metadata:
         for card in self.catalog.cards(self.catalog.snapshot()[1]):cards.setdefault(card['id'],card)
         with self.catalog.db() as db:
             for row in db.execute('SELECT payload FROM catalog_provider_items'):
-                card=json.loads(row[0]);cards.setdefault(card['id'],card)
+                card=json.loads(row[0])
+                if self.catalog.canonical_id(card['id']) == card['id']:cards.setdefault(card['id'],card)
         return list(cards.values())
 
     def start(self):

@@ -18,18 +18,21 @@ class Library:
             ''')
 
     def flags(self,cid):
+        ids = self.catalog.alias_ids(cid)
         with self.catalog.db() as db:
-            row=db.execute('SELECT favorite,watch_later,watched FROM library_flags WHERE profile_id=? AND content_id=?',('main',cid)).fetchone()
-        return {key:bool(row[key]) if row else False for key in ('favorite','watch_later','watched')}
+            rows=db.execute('SELECT favorite,watch_later,watched FROM library_flags WHERE profile_id=? AND content_id IN (' + ','.join('?' for _ in ids) + ')',('main',*ids)).fetchall()
+        return {key:any(bool(row[key]) for row in rows) for key in ('favorite','watch_later','watched')}
 
     def update(self,cid,changes):
         if self.catalog.detail(cid) is None: raise KeyError(cid)
         if not changes or any(k not in ('favorite','watch_later','watched') or type(v) is not bool for k,v in changes.items()): raise ValueError('Invalid flags')
+        ids = self.catalog.alias_ids(cid)
+        cid = self.catalog.canonical_id(cid)
         with self.catalog.db() as db:
             db.execute('BEGIN IMMEDIATE')
             db.execute('INSERT OR IGNORE INTO library_flags(profile_id,content_id,updated_at) VALUES (?,?,?)',('main',cid,time.time()))
             for key,value in changes.items():
-                db.execute('UPDATE library_flags SET '+key+'=?,updated_at=? WHERE profile_id=? AND content_id=?',(int(value),time.time(),'main',cid))
+                db.execute('UPDATE library_flags SET '+key+'=?,updated_at=? WHERE profile_id=? AND content_id IN (' + ','.join('?' for _ in ids) + ')',(int(value),time.time(),'main',*ids))
         return self.flags(cid)
 
     def shelves(self):
@@ -53,11 +56,10 @@ class Library:
             rows=progress if kind in ('continue','history') else [r for r in flags if r[kind]]
             for row in rows:
                 cid=row['content_id']
-                if cid in seen: continue
                 item=card(cid)
-                if not item: continue
+                if not item or item['id'] in seen: continue
                 # Choose latest file per content before filtering completion: do not offer an older episode instead.
-                seen.add(cid)
+                seen.add(item['id'])
                 if kind=='continue' and (row['completed'] or item['library']['watched']): continue
                 if kind in ('continue','history'):
                     item['resume_target']={k:row[k] for k in ('release_id','file_id','file_title','position_ms','duration_ms','completed','updated_at')}

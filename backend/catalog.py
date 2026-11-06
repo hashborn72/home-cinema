@@ -39,7 +39,12 @@ def merge_native(base,incoming):
     return merged
 def lostfilm_slug(url):
     parsed=urllib.parse.urlparse(url)
-    if parsed.hostname not in ('www.lostfilm.tv','lostfilm.tv'):return None
+    try:
+        if (parsed.scheme not in ('http','https') or parsed.hostname not in ('www.lostfilm.tv','lostfilm.tv')
+                or parsed.username or parsed.password or parsed.port not in (None,80,443)):
+            return None
+    except ValueError:
+        return None
     parts=urllib.parse.unquote(parsed.path).split('/')
     return parts[2].strip() if len(parts)>2 and parts[1]=='series' and re.fullmatch(r'[A-Za-z0-9_-]+',parts[2].strip()) else None
 def native_matches_source(card,metadata):
@@ -134,6 +139,7 @@ class Catalog:
         self.path = self.data_dir / 'library.sqlite3'
         self.stop_event = threading.Event()
         self.ingest_lock = threading.RLock()
+        self._lostfilm_groups = None
         self.threads = []
         with self.db() as db:
             db.executescript('''
@@ -170,7 +176,9 @@ class Catalog:
 
     def ingest(self, source, rows, update_shelf=True, provider_cards=None):
         with self.ingest_lock:
-            return self._ingest(source,rows,update_shelf,provider_cards)
+            result = self._ingest(source,rows,update_shelf,provider_cards)
+            self._lostfilm_groups = None
+            return result
 
     def _ingest(self, source, rows, update_shelf=True, provider_cards=None):
         # Jackett GUIDs and direct top-page links can name the same torrent differently.
@@ -265,11 +273,58 @@ class Catalog:
             releases = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM catalog_releases')]
         return states,releases
 
-    @staticmethod
-    def cards(releases):
+    def _lostfilm_identities(self):
+        # A special has no SxxExx marker. Its exact LostFilm series URL is identity evidence.
+        # Keep stored IDs and personal records intact; resolve aliases only when reading.
+        with self.ingest_lock:
+            if self._lostfilm_groups is not None:
+                return self._lostfilm_groups
+            with self.db() as db:
+                rows = [json.loads(r[0]) for r in db.execute("SELECT payload FROM catalog_releases WHERE source='lostfilm'")]
+            numbered, specials, id_slugs = {}, {}, {}
+            for row in rows:
+                slug = lostfilm_slug(row.get('details', ''))
+                content = row['content']
+                if not slug or content.get('media_type') != 'tv':
+                    continue
+                id_slugs.setdefault(content['id'], set()).add(slug)
+                target = specials if content.get('match') == 'unmatched' else numbered
+                target.setdefault(slug, []).append(row)
+            targets, aliases = {}, {}
+            for slug, extra_rows in specials.items():
+                candidates = [r for r in numbered.get(slug, []) if id_slugs[r['content']['id']] == {slug}]
+                candidates.sort(key=lambda r: (r.get('first_seen_at') or float('inf'), r['content']['id']))
+                fallback_id = digest('tv:lostfilm:series-url:' + slug)
+                base = dict(candidates[0]['content']) if candidates else dict(
+                    id=fallback_id, title=slug.replace('_', ' '), aliases=[], year=None,
+                    media_type='tv', match='source_series_slug', season=None, episode=None, quality=None)
+                base['source_slug'] = slug
+                ids = {base['id'], fallback_id, *(r['content']['id'] for r in extra_rows)}
+                aliases.setdefault(base['id'], set()).update(ids)
+                for cid in ids:
+                    targets[cid] = base
+            self._lostfilm_groups = targets, aliases
+            return self._lostfilm_groups
+
+    def canonical_id(self, content_id):
+        target = self._lostfilm_identities()[0].get(content_id)
+        return target['id'] if target else content_id
+
+    def alias_ids(self, content_id):
+        targets, aliases = self._lostfilm_identities()
+        canonical = targets.get(content_id, {}).get('id', content_id)
+        return sorted(aliases.get(canonical, {canonical}))
+
+    def cards(self, releases):
+        targets, _ = self._lostfilm_identities()
         groups = {}
         for release in releases:
             content = release['content']
+            target = targets.get(content['id']) if release['source'] == 'lostfilm' else None
+            if target and content.get('match') == 'unmatched':
+                content = dict(content, id=target['id'], title=target['title'], year=target['year'],
+                               match=target['match'], source_slug=target['source_slug'],
+                               aliases=list(dict.fromkeys(target.get('aliases', []) + content.get('aliases', []) + [content['title']])))
             card = groups.setdefault(content['id'],dict(content,release_count=0,seeders=None,published_at=0,sources=[]))
             card['aliases']=list(dict.fromkeys(card.get('aliases',[])+content.get('aliases',[])+([content['title']] if content['title']!=card['title'] else [])))
             card['release_count'] += 1
@@ -312,6 +367,9 @@ class Catalog:
         with self.db() as db:
             for row in db.execute('SELECT payload FROM catalog_provider_items'):
                 card=json.loads(row['payload'])
+                canonical = self.canonical_id(card['id'])
+                if canonical != card['id']:
+                    continue  # Its releases already provide the merged series card.
                 if card['id'] not in known:cards.append(card);known.add(card['id'])
         terms = normal(query).split()
         metadata_titles={}
@@ -324,21 +382,25 @@ class Catalog:
         return {'results':cards[:200], 'total':len(cards)}
 
     def detail(self, content_id):
+        content_id = self.canonical_id(content_id)
+        ids = self.alias_ids(content_id)
+        marks = ','.join('?' for _ in ids)
         with self.db() as db:
-            releases = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM catalog_releases WHERE content_id=?',(content_id,))]
-        with self.db() as db:
-            entry=db.execute('SELECT payload FROM catalog_provider_items WHERE id=?',(content_id,)).fetchone()
-        if not releases and not entry: return None
+            releases = [json.loads(r['payload']) for r in db.execute(
+                'SELECT payload FROM catalog_releases WHERE content_id IN (' + marks + ')', ids)]
+            entries = [json.loads(r['payload']) for r in db.execute(
+                'SELECT payload FROM catalog_provider_items WHERE id IN (' + marks + ')', ids)]
+        if not releases and not entries: return None
         source_slug=None
         if releases and all(r['source']=='lostfilm' for r in releases):
             # A title alone can match two remakes. Keep the exact provider series from the current feed.
             primary=max(releases,key=lambda r:(r.get('seen_at',0),r.get('published_at',0)))
             source_slug=lostfilm_slug(primary.get('details',''))
             if source_slug:releases=[r for r in releases if lostfilm_slug(r.get('details',''))==source_slug]
-        card = self.cards(releases)[0] if releases else json.loads(entry['payload'])
+        card = self.cards(releases)[0] if releases else entries[0]
         if source_slug:card['source_slug']=source_slug
-        if entry:
-            directory=json.loads(entry['payload'])
+        entries.sort(key=lambda entry: entry['id'] == content_id)
+        for directory in entries:
             if native_matches_source(card,directory.get('metadata')):
                 card['provider_title']=directory.get('provider_title',card['title'])
                 card['metadata']=merge_native(card.get('metadata'),directory.get('metadata'))

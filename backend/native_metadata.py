@@ -66,7 +66,8 @@ def tracker_poster(url):
 
 def lookup(catalog, card):
     with catalog.db() as db:
-        rows = [json.loads(r[0]) for r in db.execute('SELECT payload FROM catalog_releases WHERE content_id=?', (card['id'],))]
+        ids = catalog.alias_ids(card['id'])
+        rows = [json.loads(r[0]) for r in db.execute('SELECT payload FROM catalog_releases WHERE content_id IN (' + ','.join('?' for _ in ids) + ')', ids)]
     rows.sort(key=lambda r: (r.get('seen_at', 0), r.get('published_at', 0)), reverse=True)
     sources=set(card.get('sources',[]))|{r['source'] for r in rows}
     if 'lostfilm' in sources:
