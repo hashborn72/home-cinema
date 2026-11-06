@@ -34,6 +34,12 @@ class MainActivity : ComponentActivity() {
     private var selectedPlayer by mutableStateOf(ExternalPlayer.JUST)
     private var showProbe by mutableStateOf(false)
     private var showConnection by mutableStateOf(false)
+    private val installPermission: androidx.activity.result.ActivityResultLauncher<android.content.Intent> = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        updater.permissionReturned()
+    }
+    private val updater: UpdateController by lazy { UpdateController(this, scope,
+        { prefs.getString("backend", "http://192.168.1.144:8093")!! },
+        { installPermission.launch(it) }) }
     private fun hasConnection() = prefs.getBoolean("trusted_lan", false) || !prefs.getString("token", "").isNullOrEmpty()
     private val launcher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val session = prefs.getString("active_session", null)
@@ -76,7 +82,8 @@ class MainActivity : ComponentActivity() {
                 CatalogScreen(request = { path -> request(path) },
                     post = { path, body -> request(path,body) },
                     onPlay = { release, file, resume -> playFile(release,file,resume) },
-                    playerStatus = status, playerBusy = busy, onProbe = { showProbe = true })
+                    playerStatus = status, playerBusy = busy, onProbe = { showProbe = true },
+                    onCheckUpdate = { updater.check(true) }, updateStatus = updater.message, updateBusy = updater.working)
             } else {
             BackHandler { showProbe = false }
             MaterialTheme {
@@ -114,8 +121,21 @@ class MainActivity : ComponentActivity() {
                 }
             }
             }
+            if (updater.showDialog && !busy && !showConnection && !prefs.contains("active_session")) {
+                updater.available?.let { update -> UpdateDialog(update,
+                    onUpdate = { updater.update() }, onLater = { updater.showDialog = false }) }
+            }
+            if (updater.showNotice && !updater.working && !updater.showDialog) {
+                UpdateNotice(updater.message) { updater.showNotice = false }
+            }
+            if (updater.working && !updater.showDialog) {
+                Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.BottomCenter) {
+                    Text(updater.message, color = Color.White,
+                        modifier = Modifier.background(Color(0xFF101722)).padding(18.dp))
+                }
+            }
         }
-        if (!showConnection) refresh()
+        if (!showConnection) { refresh(); updater.check(false) }
     }
 
     private suspend fun connectDevice(rawBase: String) {
@@ -146,7 +166,7 @@ class MainActivity : ComponentActivity() {
         check(prefs.edit().putString("backend",base).putBoolean("trusted_lan",true).remove("token").commit()) {
             "Не удалось сохранить адрес сервера. Попробуйте ещё раз."
         }
-        showProbe=false;showConnection=false;refresh()
+        showProbe=false;showConnection=false;refresh();updater.check(false)
     }
 
     private suspend fun request(path: String, body: JSONObject? = null): JSONObject = withContext(Dispatchers.IO) {
@@ -238,6 +258,12 @@ class MainActivity : ComponentActivity() {
         launcher.launch(player.intent(url, title, positionMs))
     }
 
-    override fun onDestroy() { scope.cancel(); super.onDestroy() }
+    override fun onResume() {
+        super.onResume()
+        updater.refreshInstallStatus()
+        updater.permissionReturned()
+    }
+
+    override fun onDestroy() { updater.close(); scope.cancel(); super.onDestroy() }
     private fun formatTime(ms: Long): String = "%02d:%02d".format(ms / 60000, ms / 1000 % 60)
 }

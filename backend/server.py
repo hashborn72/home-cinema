@@ -22,6 +22,8 @@ from pairing import Pairing
 from providers import Providers
 from indexing import Indexer
 from settings import public_url
+from episode_progress import EpisodeProgress, completed
+from updates import latest_release, release_file
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
@@ -115,6 +117,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
     torrents = Torrents(catalog)
     metadata = Metadata(catalog)
     library = Library(catalog)
+    episode_progress = EpisodeProgress(catalog)
     anwap_search = Search(catalog)
     streams = Streams(catalog)
     torrent_streams = TorrentStreams(catalog,torrents)
@@ -174,9 +177,18 @@ def create_app(data_dir: Path, test_token: str | None = None):
         return FileResponse(path, media_type='application/vnd.android.package-archive',
                             filename='home-cinema.apk', headers={'Cache-Control': 'no-cache'})
 
+    @app.get('/api/v1/app-update')
+    def app_update():
+        return JSONResponse(latest_release(), headers={'Cache-Control': 'no-store'})
+
+    @app.api_route('/downloads/{filename}', methods=['GET', 'HEAD'])
+    def versioned_apk(filename: str):
+        return FileResponse(release_file(filename), media_type='application/vnd.android.package-archive',
+                            headers={'Cache-Control': 'public, max-age=31536000, immutable'})
+
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'version': '0.9.7', 'environment': 'compose' if os.environ.get('CINEMA_STACK_SETUP') == '1' else 'development'}
+        return {'status': 'ok', 'version': '0.9.8', 'environment': 'compose' if os.environ.get('CINEMA_STACK_SETUP') == '1' else 'development'}
 
     @app.get('/api/v1/metadata/status', dependencies=[Depends(auth)])
     def metadata_status():return dict(metadata.status(),index_last_success=indexer.last_success,index_error=indexer.last_error)
@@ -244,12 +256,9 @@ def create_app(data_dir: Path, test_token: str | None = None):
             with db() as conn:
                 for file in state['files']:
                     item=selection(release_id,file['id'],False)
-                    row=conn.execute('SELECT position_ms,completed FROM progress WHERE profile_id=? AND content_id=? AND file_key=?',('main',item['content_id'],item['file_key'])).fetchone()
-                    if item['file_key']=='anwap:pending':
-                        row=conn.execute('''SELECT p.position_ms,p.completed FROM progress p
-                          JOIN playback_sessions s ON s.seq=p.last_session_seq JOIN playback_targets t ON t.session_id=s.id
-                          WHERE p.profile_id='main' AND t.release_id=? AND t.file_id=? ORDER BY p.updated_at DESC LIMIT 1''',(release_id,file['id'])).fetchone()
+                    row=episode_progress.find(conn,item,release_id,file['id'])
                     file['position_ms']=row['position_ms'] if row else None
+                    file['duration_ms']=row['duration_ms'] if row else None
                     file['completed']=bool(row['completed']) if row else False
         return state
 
@@ -262,11 +271,13 @@ def create_app(data_dir: Path, test_token: str | None = None):
         session_id=str(uuid.uuid4())
         with db() as conn:
             conn.execute('BEGIN IMMEDIATE')
-            row=conn.execute('SELECT * FROM progress WHERE profile_id=? AND content_id=? AND file_key=?',('main',item['content_id'],item['file_key'])).fetchone()
+            row=episode_progress.find(conn,item,body.release_id,body.file_id)
             position=(row['position_ms'] or 0) if body.resume and row and not row['completed'] else 0
             conn.execute('INSERT INTO playback_sessions(id,content_id,file_key,started_at,start_position_ms) VALUES (?,?,?,?,?)',
                          (session_id,item['content_id'],item['file_key'],time.time(),position))
             conn.execute('INSERT INTO playback_targets VALUES (?,?,?,?)',(session_id,body.release_id,body.file_id,item['title']))
+            identity=episode_progress.identity(body.release_id,body.file_id,conn)
+            if identity: conn.execute('INSERT INTO episode_targets VALUES (?,?,?,?)',(session_id,*identity))
         return dict(item,id=session_id,start_position_ms=position)
 
     @app.get('/api/v1/catalog/home', dependencies=[Depends(auth)])
@@ -365,7 +376,7 @@ def create_app(data_dir: Path, test_token: str | None = None):
             if session is None:
                 raise HTTPException(404, 'Session not found')
             conn.execute('INSERT INTO playback_results VALUES (?,?,?,?,?)', (str(body.event_id), session_id, time.time(), payload, fingerprint))
-            known_completion = body.result_ok and body.end_by == 'playback_completion'
+            known_completion = body.result_ok and completed(body.position_ms, body.duration_ms, body.end_by == 'playback_completion')
             if body.result_ok and (body.position_ms is not None or known_completion):
                 # Do not replace known position with null, nor newer playback with a delayed old result.
                 conn.execute('''INSERT INTO progress VALUES (?,?,?,?,?,?,?,?)

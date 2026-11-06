@@ -46,7 +46,8 @@ internal fun cardSubtitle(card: JSONObject): String {
 fun CatalogScreen(request: suspend (String) -> JSONObject,
     post: suspend (String,JSONObject) -> JSONObject,
     onPlay: suspend (String,Int,Boolean) -> Unit,
-    playerStatus: String, playerBusy: Boolean, onProbe: () -> Unit) {
+    playerStatus: String, playerBusy: Boolean, onProbe: () -> Unit,
+    onCheckUpdate: () -> Unit = {}, updateStatus: String = "", updateBusy: Boolean = false) {
     val scope = rememberCoroutineScope()
     var section by remember { mutableStateOf("Главная") }
     var query by remember { mutableStateOf("") }
@@ -255,7 +256,8 @@ fun CatalogScreen(request: suspend (String) -> JSONObject,
                     }
                 },onRetry={seriesAttempt++})
         } else if(section=="Настройки") {
-            CinemaSettingsScreen(onBack={section="Главная"},onProbe=onProbe)
+            CinemaSettingsScreen(onBack={section="Главная"},onProbe=onProbe,
+                onCheckUpdate=onCheckUpdate,updateStatus=updateStatus,updateBusy=updateBusy)
         } else if(section=="Источники") {
             ProviderScreen(providerState,request,post,onBack={section="Главная"},onOpen={open(it,"Источники")})
         } else {

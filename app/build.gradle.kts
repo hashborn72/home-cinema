@@ -10,8 +10,8 @@ android {
         applicationId = "space.hashborn.cinema"
         minSdk = 23
         targetSdk = 35
-        versionCode = 19
-        versionName = "0.9.7"
+        versionCode = 20
+        versionName = "0.9.8"
     }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions {

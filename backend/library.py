@@ -1,5 +1,6 @@
 """Local personal state, independent of provider metadata and player completion."""
 import time
+from episode_progress import completed
 
 
 class Library:
@@ -37,7 +38,9 @@ class Library:
             progress=[dict(r) for r in db.execute('''SELECT p.*,t.release_id,t.file_id,t.title AS file_title
                 FROM progress p JOIN playback_sessions s ON s.seq=p.last_session_seq
                 JOIN playback_targets t ON t.session_id=s.id
-                WHERE p.profile_id=? AND (p.position_ms>0 OR p.completed=1) ORDER BY p.updated_at DESC''',('main',))]
+                WHERE p.profile_id=? AND (p.position_ms>0 OR p.completed=1) ORDER BY p.last_session_seq DESC''',('main',))]
+        for row in progress:
+            row['completed']=completed(row['position_ms'],row['duration_ms'],row['completed'])
         def card(cid):
             result=self.catalog.detail(cid)
             if result:

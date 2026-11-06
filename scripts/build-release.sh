@@ -13,6 +13,5 @@ buildtools="$ANDROID_HOME/build-tools/35.0.0"
   --ks-pass "file:$signing/store-password" \
   --out dist/home-cinema-release.apk dist/home-cinema-aligned.apk
 "$buildtools/apksigner" verify --verbose --print-certs dist/home-cinema-release.apk
-# Publish only after signature verification; rename makes the switch atomic.
-install -m 644 dist/home-cinema-release.apk dist/home-cinema.apk.new
-mv dist/home-cinema.apk.new dist/home-cinema.apk
+# Keep one signing/build workflow. Version metadata is extracted from this verified APK.
+python3 scripts/publish-release.py dist/home-cinema-release.apk release-notes.txt "$buildtools/aapt"

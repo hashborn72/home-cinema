@@ -20,3 +20,4 @@ tmdb-token
 *.jks
 signing/
 __pycache__/
+work/

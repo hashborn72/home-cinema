@@ -53,10 +53,10 @@ class TvLayoutTest {
         compose.waitForIdle()
     }
 
-    private fun capture(name:String) {
+    private fun capture(name:String,dialog:Boolean=false) {
         val folder=File("build/reports/tv-layout").apply {mkdirs()}
         compose.runOnIdle {
-            val view=activity!!.get().window.decorView
+            val view=if(dialog) android.view.inspector.WindowInspector.getGlobalWindowViews().last() else activity!!.get().window.decorView
             val bitmap=Bitmap.createBitmap(view.width,view.height,Bitmap.Config.ARGB_8888)
             view.draw(Canvas(bitmap))
             File(folder,"$name.png").outputStream().use {
@@ -166,7 +166,9 @@ class TvLayoutTest {
                 onPlay={file,resume -> plays += file.getInt("id") to resume},onRefresh={})
         }
         settleFocus()
-        compose.onNodeWithTag("release-file-2").assertIsFocused().assertIsDisplayed().remoteClick()
+        compose.onNodeWithTag("release-file-2").assertIsFocused().assertIsDisplayed()
+        capture("partial_episode_progress")
+        compose.onNodeWithTag("release-file-2").remoteClick()
         compose.onNodeWithTag("release-file-restart-2").assertIsDisplayed().remoteClick()
         compose.onNodeWithTag("release-file-3").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Смотреть снова").assertIsDisplayed()
@@ -197,4 +199,28 @@ class TvLayoutTest {
         compose.onNodeWithText(fullName,useUnmergedTree=true).assertDoesNotExist()
         compose.onNodeWithTag("release-file-info-2").assertIsDisplayed().assertIsFocused()
     }
+    @Test fun updateDialogCanBeOperatedWithTheRemote() {
+        var selected=""
+        val update=AppUpdate(21,"0.9.9","Обновления через домашний сервер.\nПрогресс серий общий для разных качеств.",
+            "http://home/downloads/unused.apk",8_000_000,"a".repeat(64),23)
+        render { UpdateDialog(update,onUpdate={selected="update"},onLater={selected="later"}) }
+        settleFocus()
+        compose.onNodeWithText("Обновить").assertIsDisplayed().assertIsFocused()
+        capture("update_dialog",dialog=true)
+        compose.onNodeWithText("Позже").remoteClick()
+        compose.runOnIdle {assertEquals("later",selected)}
+        compose.onNodeWithText("Обновить").remoteClick()
+        compose.runOnIdle {assertEquals("update",selected)}
+    }
+
+    @Test fun settingsExposeManualUpdateAndItsResult() {
+        var checks=0
+        render { CinemaSettingsScreen(onBack={},onProbe={},onCheckUpdate={checks++},
+            updateStatus="Установлена последняя версия.") }
+        settleFocus()
+        compose.onNodeWithText("Проверить обновления").remoteClick()
+        compose.runOnIdle {assertEquals(1,checks)}
+        compose.onNodeWithText("Установлена последняя версия.").assertIsDisplayed()
+    }
+
 }
